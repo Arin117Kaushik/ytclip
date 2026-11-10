@@ -6,7 +6,15 @@ Download an exact clip from a YouTube video without downloading the whole video.
 python clip.py "https://youtu.be/pf5tXJZM1Rw" 2:00 2:30
 ```
 
-A 30 second 1080p clip takes about 15 seconds. The file is H.264 + AAC in an `.mp4`, so it opens in Premiere, DaVinci Resolve, CapCut, WhatsApp and everything else.
+A 30 second 1080p clip takes about 15 seconds (closer to 40 for 60fps video). The file is H.264 + AAC in an `.mp4`, so it opens in Premiere, DaVinci Resolve, CapCut, WhatsApp and everything else.
+
+There is also a web page if you would rather not type commands:
+
+```bash
+python app.py
+```
+
+Paste the link, type the start and end, press **Download clip**, choose where to save.
 
 ## Why this exists
 
@@ -19,6 +27,7 @@ A 30 second 1080p clip takes about 15 seconds. The file is H.264 + AAC in an `.m
 | YouTube throttles ffmpeg to about 50 KB/s | A 30 second clip takes 4 minutes | Requests the stream in 5 MB pieces, which is not throttled |
 | New stream links answer 403 for a second or two | Random "403 Forbidden" failures | Waits and retries the open |
 | YouTube bot-blocks one of your two network addresses | "Sign in to confirm you're not a bot" | Tries IPv4 first, then the other route |
+| YouTube drops the audio connection during a slow encode | Clip with short or missing audio, and no error | Reconnects automatically, and checks audio and video length separately |
 | Silent bad output | A file with no audio, or the wrong length | Checks every clip with ffprobe before calling it done |
 
 ## Install
@@ -71,6 +80,34 @@ python clip.py "https://youtu.be/pf5tXJZM1Rw" 0 12.5 --res 720 -o intro.mp4
 When you give a folder, the file is named after the video and the timestamps, for example `Video title [2m00s-2m30s].mp4`.
 
 On Windows you can also run `ytclip.cmd` the same way, which saves typing `python clip.py`.
+
+## Web page
+
+```bash
+python app.py
+```
+
+This starts a small local server and opens `http://127.0.0.1:8765` in your browser. On Windows you can double-click `ytclip-web.cmd` instead.
+
+1. Paste a YouTube link. The title, thumbnail and length appear so you know it is the right video.
+2. Type the start and end, and pick a quality.
+3. Press **Download clip**. Chrome and Edge ask where to save it. Other browsers save to their normal downloads folder.
+
+To use it from your phone, start it with `--lan` and open the address it prints. The phone must be on the same Wi-Fi.
+
+```bash
+python app.py --lan
+```
+
+`--lan` lets any device on your network use the page, so only use it on a network you trust. Without it, only your own computer can reach the page.
+
+| Option | Meaning |
+|---|---|
+| `--port 9000` | Use another port. Default is `8765` |
+| `--lan` | Allow other devices on your Wi-Fi |
+| `--no-browser` | Do not open the browser automatically |
+
+The page is one HTML file in `web/` with no build step and no dependencies. The server is Python standard library only and calls the same code as the terminal tool.
 
 ## How it works
 

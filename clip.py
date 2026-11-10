@@ -63,7 +63,15 @@ def resolve(url, res, net):
     return json.loads(done.stdout)
 
 
-def ffmpeg_cut(inputs, start, length, out):
+class Unfixable(Exception):
+    """The request itself is wrong, so trying another route will not help."""
+
+
+def show_percent(percent):
+    print(f"\r  {percent:3.0f}%", end="" if percent < 100 else "\n", flush=True)
+
+
+def ffmpeg_cut(inputs, start, length, out, tick):
     """Encode `length` seconds starting at `start`. `inputs` is a list of (address, headers)."""
     cmd = ["ffmpeg", "-y", "-v", "error", "-nostats", "-progress", "pipe:1"]
     for address, headers in inputs:
@@ -71,6 +79,8 @@ def ffmpeg_cut(inputs, start, length, out):
             # YouTube throttles open-ended requests to ~50 KB/s. Asking in 5 MB pieces
             # avoids that (needs ffmpeg from 2025 or newer).
             cmd += ["-request_size", "5000000",
+                    # YouTube drops the audio connection while a slow encode keeps it idle.
+                    "-reconnect", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "5",
                     "-rw_timeout", "30000000",  # give up if the network stalls for 30s
                     "-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
         cmd += ["-ss", str(start), "-i", address]
@@ -81,13 +91,12 @@ def ffmpeg_cut(inputs, start, length, out):
     for line in proc.stdout:
         key, _, value = line.strip().partition("=")
         if key == "out_time_us" and value.isdigit():
-            print(f"\r  {min(100, int(value) / 1e6 / length * 100):3.0f}%", end="", flush=True)
+            tick(min(99, int(value) / 1e6 / length * 100))
         elif line.strip() == "progress=end":
             finished = True
             break
         elif "=" not in line and line.strip():
             errors.append(line.strip())
-    print()
     # The file is finished here, so never let a slow connection close hold us up.
     try:
         proc.wait(timeout=5)
@@ -96,13 +105,14 @@ def ffmpeg_cut(inputs, start, length, out):
     if not finished or not Path(out).is_file():
         Path(out).unlink(missing_ok=True)  # never leave a half-written clip behind
         raise RuntimeError(errors[0][:160] if errors else "ffmpeg stopped early")
+    tick(100)
 
 
-def section(url, start, end, res, out_for, net):
-    """Fetch only the wanted section."""
-    info = resolve(url, res, net)
+def section(url, start, end, res, out_for, net, tick, info=None):
+    """Fetch only the wanted section. `info` is an earlier resolve() result to reuse."""
+    info = info or resolve(url, res, net)
     if end > (info.get("duration") or end) + TOLERANCE:
-        raise SystemExit(f"END is past the end of the video ({info['duration']}s long)")
+        raise Unfixable(f"END is past the end of the video, which is {info['duration']:g}s long")
     formats = info.get("requested_formats") or [info]
     out = out_for(info["title"])
     inputs = [(f["url"], f.get("http_headers") or {"User-Agent": "Mozilla/5.0"}) for f in formats]
@@ -110,24 +120,24 @@ def section(url, start, end, res, out_for, net):
     for attempt in range(5):
         time.sleep(2)
         try:
-            ffmpeg_cut(inputs, start, end - start, out)
+            ffmpeg_cut(inputs, start, end - start, out, tick)
             return out
         except RuntimeError as err:
             if "403" not in str(err) or attempt == 4:
                 raise
 
 
-def whole_then_cut(url, start, end, res, out_for, net):
+def whole_then_cut(url, start, end, res, out_for, net, tick):
     """Last resort: fetch the full video with yt-dlp's own downloader, cut it locally."""
     with tempfile.TemporaryDirectory() as tmp:
         cmd = [*ytdlp_base(res, net), "--merge-output-format", "mp4", "--print", "after_move:%(title)s",
-               "--progress", "-o", str(Path(tmp) / "full.%(ext)s"), url]
-        done = subprocess.run(cmd, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+               "-o", str(Path(tmp) / "full.%(ext)s"), url]
+        done = run(cmd)
         full = next(Path(tmp).glob("full.*"), None)
         if done.returncode != 0 or not full:
             raise RuntimeError("full download failed")
         out = out_for(done.stdout.strip().splitlines()[-1])
-        ffmpeg_cut([(str(full), None)], start, end - start, out)
+        ffmpeg_cut([(str(full), None)], start, end - start, out, tick)
         return out
 
 
@@ -136,21 +146,60 @@ def verify(path, want):
     if not path.is_file() or path.stat().st_size < 10_000:
         return "no output file"
     probe = run(["ffprobe", "-v", "error", "-show_entries",
-                 "format=duration:stream=codec_type,codec_name", "-of", "json", str(path)])
+                 "stream=codec_type,duration", "-of", "json", str(path)])
     try:
-        info = json.loads(probe.stdout)
-        kinds = {s["codec_type"]: s["codec_name"] for s in info["streams"]}
-        got = float(info["format"]["duration"])
+        lengths = {s["codec_type"]: float(s["duration"]) for s in json.loads(probe.stdout)["streams"]}
     except (ValueError, KeyError):
         return "file is not readable"
-    if "video" not in kinds or "audio" not in kinds:
-        return f"missing a stream, found only {sorted(kinds)}"
-    if abs(got - want) > TOLERANCE:
-        return f"length is {got:.2f}s, expected {want:.2f}s"
+    # Checked per stream: a dropped connection can cut the audio short while the video is whole.
+    for kind in ("video", "audio"):
+        if kind not in lengths:
+            return f"no {kind} in the file"
+        if abs(lengths[kind] - want) > TOLERANCE:
+            return f"{kind} is {lengths[kind]:.2f}s long, expected {want:.2f}s"
     # Decode the whole clip. Catches corrupt or truncated downloads.
     if run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"]).stderr.strip():
         return "file has decode errors"
     return None
+
+
+def make_clip(url, start, end, res, dest, say=print, tick=show_percent, info=None):
+    """Make the clip and return its path. `dest` is a folder or an .mp4 path.
+
+    Raises Unfixable for a bad request and RuntimeError when every route failed.
+    """
+    if not re.match(r"https?://", url):
+        raise Unfixable("That is not a link. It should start with https://")
+    if end <= start:
+        raise Unfixable("END must be after START")
+    dest = Path(dest).expanduser()
+    is_file = dest.suffix.lower() == ".mp4"
+    (dest.parent if is_file else dest).mkdir(parents=True, exist_ok=True)
+
+    def out_for(title):
+        return dest if is_file else dest / f"{safe_name(title)} [{label(start)}-{label(end)}].mp4"
+
+    job = (url, start, end, res, out_for)
+    steps = [
+        ("Downloading just the clip", lambda: section(*job, IPV4, tick, info)),
+        ("Trying the other network route", lambda: section(*job, AUTO, tick)),
+        ("Updating yt-dlp and trying again", lambda: run(["yt-dlp", "-U"]) and section(*job, IPV4, tick)),
+        ("Downloading the full video and cutting it locally", lambda: whole_then_cut(*job, IPV4, tick)),
+    ]
+    problem = "nothing was tried"
+    for name, step in steps:
+        say(f"{name}...")
+        try:
+            made = step()
+            problem = verify(made, end - start)
+        except (RuntimeError, OSError, ValueError) as err:
+            made, problem = None, str(err)
+        if problem is None:
+            return made
+        say(f"  did not work: {problem}")
+        if made:
+            made.unlink(missing_ok=True)
+    raise RuntimeError(f"Every route failed. Last problem: {problem}")
 
 
 def main():
@@ -161,38 +210,13 @@ def main():
     ap.add_argument("-o", "--out", default=".", help="folder or .mp4 file (default: current folder)")
     ap.add_argument("--res", type=int, default=1080, help="max height, e.g. 720 (default 1080)")
     a = ap.parse_args()
-    if a.end <= a.start:
-        ap.error("END must be after START")
-
-    dest = Path(a.out).expanduser()
-    is_file = dest.suffix.lower() == ".mp4"
-    (dest.parent if is_file else dest).mkdir(parents=True, exist_ok=True)
-
-    def out_for(title):
-        return dest if is_file else dest / f"{safe_name(title)} [{label(a.start)}-{label(a.end)}].mp4"
-
-    job = (a.url, a.start, a.end, a.res, out_for)
-    steps = [
-        ("Downloading just the clip", lambda: section(*job, IPV4)),
-        ("Trying the other network route", lambda: section(*job, AUTO)),
-        ("Updating yt-dlp and trying again", lambda: run(["yt-dlp", "-U"]) and section(*job, IPV4)),
-        ("Downloading the full video and cutting it locally", lambda: whole_then_cut(*job, IPV4)),
-    ]
-    for name, step in steps:
-        print(f"> {name}...", flush=True)
-        try:
-            made = step()
-            problem = verify(made, a.end - a.start)
-        except (RuntimeError, OSError, ValueError) as err:
-            made, problem = None, str(err)
-        if problem is None:
-            print(f"Saved {a.end - a.start:g}s clip: {made.resolve()}")
-            return 0
-        print(f"  did not work: {problem}", flush=True)
-        if made:
-            made.unlink(missing_ok=True)
-    print("Failed. Check the link opens in a browser and the timestamps are inside the video.", file=sys.stderr)
-    return 1
+    try:
+        made = make_clip(a.url, a.start, a.end, a.res, a.out)
+    except (Unfixable, RuntimeError) as err:
+        print(f"Failed. {err}", file=sys.stderr)
+        return 1
+    print(f"Saved {a.end - a.start:g}s clip: {made.resolve()}")
+    return 0
 
 
 def self_test():
