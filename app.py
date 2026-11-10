@@ -8,8 +8,10 @@ Standard library only. The clip work is done by clip.py.
 """
 import argparse
 import json
+import os
 import shutil
 import socket
+import subprocess
 import tempfile
 import threading
 import time
@@ -30,8 +32,6 @@ WORK = Path(tempfile.mkdtemp(prefix="ytclip-"))
 
 
 def get_info(url, res):
-    if not url.startswith(("https://", "http://")):
-        raise clip.Unfixable("That is not a link. It should start with https://")
     cached = INFO.get((url, res))
     if cached and time.time() - cached[0] < INFO_MAX_AGE:
         return cached[1]
@@ -45,18 +45,26 @@ def get_info(url, res):
 
 def run_job(job, url, start, end, res):
     def say(text):
-        job["step"] = text.strip()
+        job.update(step=text.strip(), percent=0)
+        job["log"].append(text.strip())  # so a failed route can be diagnosed from /api/job/<id>
 
     def tick(percent):
         job["percent"] = round(percent)
 
     try:
-        cached = INFO.pop((url, res), None)
+        # Kept in the cache on success, so more clips from the same video cost no new lookup.
+        cached = INFO.get((url, res))
         fresh = cached[1] if cached and time.time() - cached[0] < INFO_MAX_AGE else None
         made = clip.make_clip(url, start, end, res, WORK / job["id"], say, tick, fresh)
         job.update(state="done", path=made, name=made.name, percent=100)
-    except (clip.Unfixable, RuntimeError, OSError) as err:
-        job.update(state="error", error=str(err))
+    except Exception as err:  # a job must always end in "done" or "error", or the page waits forever
+        INFO.pop((url, res), None)
+        job.update(state="error", error=str(err) or type(err).__name__)
+
+
+class Server(ThreadingHTTPServer):
+    # The default lets a second copy bind the same port on Windows, and the two then split requests.
+    allow_reuse_address = os.name != "nt"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -94,7 +102,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.wfile.write(body)
         job = JOBS.get(parts[-1]) if len(parts) == 3 and parts[0] == "api" else None
         if job and parts[1] == "job":
-            return self.send_json({k: job[k] for k in ("state", "step", "percent", "error", "name")})
+            return self.send_json({k: job[k] for k in ("state", "step", "percent", "error", "name", "log")})
         if job and parts[1] == "file" and job["state"] == "done":
             self.send_response(200)
             self.send_header("Content-Type", "video/mp4")
@@ -118,7 +126,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/clip":
                 start, end = clip.parse_time(str(ask["start"])), clip.parse_time(str(ask["end"]))
                 job = {"id": uuid.uuid4().hex, "state": "working", "step": "Starting...",
-                       "percent": 0, "error": "", "name": "", "path": None}
+                       "percent": 0, "error": "", "name": "", "path": None, "log": []}
                 JOBS[job["id"]] = job
                 threading.Thread(target=run_job, args=(job, url, start, end, res), daemon=True).start()
                 return self.send_json({"job": job["id"]})
@@ -139,23 +147,53 @@ def lan_address():
             return "127.0.0.1"
 
 
+def open_window(url):
+    """Open the page in its own window, without tabs or an address bar.
+
+    Returns the browser process, or None when it fell back to a normal browser tab.
+    """
+    roots = [os.environ.get(v) for v in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
+    names = ("Google/Chrome/Application/chrome.exe", "Microsoft/Edge/Application/msedge.exe",
+             "BraveSoftware/Brave-Browser/Application/brave.exe")
+    found = [Path(r) / n for n in names for r in roots if r and (Path(r) / n).is_file()]
+    exe = found[0] if found else shutil.which("google-chrome") or shutil.which("chromium")
+    if not exe:
+        webbrowser.open(url)
+        return None
+    # Its own profile folder keeps this window a separate process, so we can tell when it closes.
+    profile = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".cache") / "ytclip" / "window"
+    return subprocess.Popen([str(exe), f"--app={url}", f"--user-data-dir={profile}",
+                             "--no-first-run", "--window-size=720,900"])
+
+
 def main():
-    ap = argparse.ArgumentParser(description="ytclip web page")
+    ap = argparse.ArgumentParser(description="ytclip app")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--lan", action="store_true", help="allow phones and other devices on your Wi-Fi")
     ap.add_argument("--no-browser", action="store_true")
     a = ap.parse_args()
     Handler.lan = a.lan
-    server = ThreadingHTTPServer(("0.0.0.0" if a.lan else "127.0.0.1", a.port), Handler)
     here = f"http://127.0.0.1:{a.port}"
+    try:
+        server = Server(("0.0.0.0" if a.lan else "127.0.0.1", a.port), Handler)
+    except OSError:
+        # Already running, so just bring up its window.
+        shutil.rmtree(WORK, ignore_errors=True)
+        if not a.no_browser:
+            open_window(here)
+        return
     print(f"ytclip is running at {here}")
     if a.lan:
         print(f"On your phone (same Wi-Fi): http://{lan_address()}:{a.port}")
     print("Press Ctrl+C to stop.")
-    if not a.no_browser:
-        webbrowser.open(here)
+    window = None if a.no_browser else open_window(here)
     try:
-        server.serve_forever()
+        if window and not a.lan:
+            # Desktop app behaviour: closing the window quits ytclip.
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            window.wait()
+        else:
+            server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:

@@ -193,6 +193,7 @@ async function lookUp() {
 }
 
 $("url").addEventListener("input", () => {
+  video = null;
   clearTimeout(lookupTimer);
   lookupTimer = setTimeout(lookUp, 500);
 });
@@ -247,6 +248,7 @@ $("form").addEventListener("submit", async (event) => {
     if (target) {
       status("Saving...");
       const reply = await fetch(file);
+      if (!reply.ok) throw new Error("The finished clip could not be read back.");
       await reply.body.pipeTo(await target.createWritable());
       status("Saved as " + target.name);
     } else {
@@ -259,6 +261,8 @@ $("form").addEventListener("submit", async (event) => {
   } catch (err) {
     status("That did not work. " + err.message, true);
     $("progress").hidden = true;
+    // The save dialog already created an empty file where the clip was meant to go.
+    if (target && target.remove) await target.remove().catch(() => {});
   } finally {
     $("go").disabled = false;
   }

@@ -87,7 +87,15 @@ On Windows you can also run `ytclip.cmd` the same way, which saves typing `pytho
 python app.py
 ```
 
-This starts a small local server and opens `http://127.0.0.1:8765` in your browser. On Windows you can double-click `ytclip-web.cmd` instead.
+This opens ytclip in its own window, like a desktop app, using Chrome, Edge or Brave if one is installed (otherwise a normal browser tab). Closing the window quits ytclip.
+
+To get a **ytclip** icon on your Desktop and in the Start Menu on Windows, run this once from the repo folder:
+
+```bash
+powershell -ExecutionPolicy Bypass -File install-shortcuts.ps1
+```
+
+After that you just double-click the icon. No terminal, no commands. If you move the repo folder, run the script again.
 
 1. Paste a YouTube link. The title, thumbnail and length appear so you know it is the right video.
 2. Type the start and end, and pick a quality.
