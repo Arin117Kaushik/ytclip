@@ -55,7 +55,10 @@ def run_job(job, url, start, end, res):
         # Kept in the cache on success, so more clips from the same video cost no new lookup.
         cached = INFO.get((url, res))
         fresh = cached[1] if cached and time.time() - cached[0] < INFO_MAX_AGE else None
-        made = clip.make_clip(url, start, end, res, WORK / job["id"], say, tick, fresh)
+        if start is None:
+            made = clip.whole_video(url, res, WORK / job["id"], say, tick)
+        else:
+            made = clip.make_clip(url, start, end, res, WORK / job["id"], say, tick, fresh)
         job.update(state="done", path=made, name=made.name, percent=100)
     except Exception as err:  # a job must always end in "done" or "error", or the page waits forever
         INFO.pop((url, res), None)
@@ -124,7 +127,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"title": info["title"], "duration": info.get("duration"),
                                        "thumbnail": info.get("thumbnail"), "name": clip.safe_name(info["title"])})
             if self.path == "/api/clip":
-                start, end = clip.parse_time(str(ask["start"])), clip.parse_time(str(ask["end"]))
+                start = end = None  # None means the whole video
+                if not ask.get("whole"):
+                    start, end = clip.parse_time(str(ask["start"])), clip.parse_time(str(ask["end"]))
                 job = {"id": uuid.uuid4().hex, "state": "working", "step": "Starting...",
                        "percent": 0, "error": "", "name": "", "path": None, "log": []}
                 JOBS[job["id"]] = job

@@ -56,6 +56,8 @@
     outline: 2px solid var(--white);
     outline-offset: 2px;
   }
+  .check { display: flex; align-items: center; gap: 12px; min-height: 48px; margin: 0; font-size: 16px; font-weight: 400; cursor: pointer; }
+  .check input { width: 22px; height: 22px; min-height: 0; padding: 0; flex: none; accent-color: var(--white); }
   .times { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
   button {
     min-height: 48px;
@@ -115,12 +117,17 @@
     </div>
     <p class="note" id="lookup" role="status" hidden></p>
 
+    <label class="check" for="whole">
+      <input id="whole" type="checkbox">
+      Download the whole video
+    </label>
+
     <div class="times">
-      <div>
+      <div class="cut">
         <label for="start">Start</label>
         <input id="start" inputmode="decimal" autocomplete="off" placeholder="1:30" required>
       </div>
-      <div>
+      <div class="cut">
         <label for="end">End</label>
         <input id="end" inputmode="decimal" autocomplete="off" placeholder="2:00" required>
       </div>
@@ -133,7 +140,7 @@
         </select>
       </div>
     </div>
-    <p class="note">Times can be seconds (90), minutes (1:30) or hours (1:02:03).</p>
+    <p class="note cut">Times can be seconds (90), minutes (1:30) or hours (1:02:03).</p>
 
     <button id="go" type="submit">Download clip</button>
 
@@ -198,9 +205,17 @@ $("url").addEventListener("input", () => {
   lookupTimer = setTimeout(lookUp, 500);
 });
 
+$("whole").addEventListener("change", () => {
+  const whole = $("whole").checked;
+  document.querySelectorAll(".cut").forEach((part) => { part.hidden = whole; });
+  $("go").textContent = whole ? "Download video" : "Download clip";
+  status("");
+});
+
 function problemWithTimes() {
   const start = $("start").value.trim(), end = $("end").value.trim();
   if (!$("url").value.trim()) return "Paste a YouTube link first.";
+  if ($("whole").checked) return "";
   if (!TIME.test(start) || !TIME.test(end)) return "Enter the start and end as 90, 1:30 or 1:02:03.";
   if (seconds(end) <= seconds(start)) return "The end has to be after the start.";
   if (video && video.duration && seconds(end) > video.duration + 0.5) return "The end is past the end of the video (" + clock(video.duration) + ").";
@@ -224,7 +239,8 @@ $("form").addEventListener("submit", async (event) => {
   if (problem) return status(problem, true);
 
   const start = $("start").value.trim(), end = $("end").value.trim();
-  const suggested = (video ? video.name : "clip") + " [" + stamp(seconds(start)) + "-" + stamp(seconds(end)) + "].mp4";
+  const whole = $("whole").checked;
+  const suggested = (video ? video.name : "clip") + (whole ? "" : " [" + stamp(seconds(start)) + "-" + stamp(seconds(end)) + "]") + ".mp4";
 
   // Chrome and Edge on a computer can ask where to save. It must be asked right on the click.
   let target = null;
@@ -241,7 +257,7 @@ $("form").addEventListener("submit", async (event) => {
   $("fill").style.width = "0%";
   status("Starting...");
   try {
-    const { job } = await post("/api/clip", { url: $("url").value.trim(), start, end, res: Number($("res").value) });
+    const { job } = await post("/api/clip", { url: $("url").value.trim(), start, end, whole, res: Number($("res").value) });
     const done = await waitFor(job);
     $("fill").style.width = "100%";
     const file = "/api/file/" + job;
@@ -254,7 +270,7 @@ $("form").addEventListener("submit", async (event) => {
     } else {
       const link = Object.assign(document.createElement("a"), { href: file, download: done.name });
       link.click();
-      $("status").textContent = "Clip ready. Your browser is saving it. ";
+      $("status").textContent = "Ready. Your browser is saving it. ";
       $("status").classList.remove("bad");
       $("status").append(Object.assign(document.createElement("a"), { href: file, download: done.name, textContent: "Save again" }));
     }

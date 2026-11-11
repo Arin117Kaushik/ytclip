@@ -65,6 +65,14 @@ python clip.py URL START END [-o FOLDER_OR_FILE] [--res HEIGHT]
 | `-o` | Folder to save into, or a full `.mp4` filename. Default is the current folder | `-o D:\Clips` or `-o intro.mp4` |
 | `--res` | Maximum height. Default is `1080` | `--res 720` |
 
+Leave out `START` and `END` to download the whole video:
+
+```bash
+python clip.py "https://youtu.be/pf5tXJZM1Rw"
+```
+
+A whole video is not re-encoded, so it is fast (a 6 minute video takes about 15 seconds). In the app, tick **Download the whole video**.
+
 Put the URL in quotes. Without them the shell breaks links that contain `&`.
 
 Examples:

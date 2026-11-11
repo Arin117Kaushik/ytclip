@@ -2,6 +2,7 @@
 """ytclip: download an exact clip from a YouTube video without fetching the whole thing.
 
     python clip.py URL START END [-o FOLDER_OR_FILE] [--res 1080]
+    python clip.py URL                   the whole video
 
 Needs yt-dlp, ffmpeg and ffprobe on PATH. Standard library only.
 
@@ -13,6 +14,7 @@ and if a route fails the next one is tried.
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -151,15 +153,63 @@ def section(url, start, end, res, out_for, net, tick, info=None):
 def whole_then_cut(url, start, end, res, out_for, net, tick):
     """Last resort: fetch the full video with yt-dlp's own downloader, cut it locally."""
     with tempfile.TemporaryDirectory() as tmp:
-        done = run(ytdlp(url, res, net, "--merge-output-format", "mp4", "--print", "after_move:%(title)s",
-                         "-o", str(Path(tmp) / "full.%(ext)s")))
-        full = next(Path(tmp).glob("full.*"), None)
-        if done.returncode != 0 or not full:
-            raise RuntimeError("full download failed")
+        full, title = download_full(url, res, net, tmp, tick)
         audio = "audio" in stream_lengths(full)
-        out = out_for((done.stdout.strip().splitlines() or ["clip"])[-1])
+        out = out_for(title)
         ffmpeg_cut([(str(full), None)], start, end - start, out, tick, audio)
         return checked(out, end - start, audio)
+
+
+def download_full(url, res, net, folder, tick):
+    """Download the whole video into `folder` with yt-dlp's own downloader. Returns (file, title)."""
+    cmd = ytdlp(url, res, net, "--merge-output-format", "mp4", "--progress", "--newline",
+                "--print", "after_move:%(title)s", "-o", str(Path(folder) / "full.%(ext)s"))
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="replace", **HIDDEN)
+    title, problem, files_done = "clip", "full download failed", 0
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            percent = re.match(r"\[download\]\s+([\d.]+)%", line)
+            if percent:
+                # Video and audio arrive as two files. The video is nearly all of it, so the
+                # bar follows the video and then waits at 99 for the audio and the merge.
+                tick(99 if files_done else min(99, float(percent.group(1))))
+                files_done += percent.group(1) == "100.0" or line.startswith("[download] 100%")
+            elif line.startswith("ERROR"):
+                problem = line[:200]
+            elif line and not line.startswith(("[", "WARNING")):
+                title = line
+        proc.wait()
+    finally:
+        proc.kill()
+    full = next(Path(folder).glob("full.*"), None)
+    if proc.returncode != 0 or not full:
+        raise RuntimeError(problem)
+    return full, title
+
+
+def whole_video(url, res, dest, say=print, tick=show_percent):
+    """Download the whole video as an .mp4 and return its path. `dest` is a folder or an .mp4 path."""
+    dest = Path(dest).expanduser()
+    is_file = dest.suffix.lower() == ".mp4"
+    (dest.parent if is_file else dest).mkdir(parents=True, exist_ok=True)
+
+    def fetch(net):
+        with tempfile.TemporaryDirectory() as tmp:
+            full, title = download_full(url, res, net, tmp, tick)
+            if not stream_lengths(full).get("video"):
+                raise RuntimeError("the download has no video in it")
+            out = dest if is_file else dest / f"{safe_name(title)}.mp4"
+            shutil.move(full, out)
+            tick(100)
+            return out
+
+    return try_routes([
+        ("Downloading the whole video", lambda: fetch(IPV4)),
+        ("Trying the other network route", lambda: fetch(AUTO)),
+        ("Updating yt-dlp and trying again", lambda: run(["yt-dlp", "-U"]) and fetch(IPV4)),
+    ], say)
 
 
 def stream_lengths(path):
@@ -212,12 +262,16 @@ def make_clip(url, start, end, res, dest, say=print, tick=show_percent, info=Non
         return dest if is_file else dest / f"{safe_name(title)} [{label(start)}-{label(end)}].mp4"
 
     job = (url, start, end, res, out_for)
-    steps = [
+    return try_routes([
         ("Downloading just the clip", lambda: section(*job, IPV4, tick, info)),
         ("Trying the other network route", lambda: section(*job, AUTO, tick)),
         ("Updating yt-dlp and trying again", lambda: run(["yt-dlp", "-U"]) and section(*job, IPV4, tick)),
         ("Downloading the full video and cutting it locally", lambda: whole_then_cut(*job, IPV4, tick)),
-    ]
+    ], say)
+
+
+def try_routes(steps, say):
+    """Run each (name, step) until one returns. Unfixable stops at once."""
     problem = "nothing was tried"
     for name, step in steps:
         say(f"{name}...")
@@ -234,17 +288,22 @@ def make_clip(url, start, end, res, dest, say=print, tick=show_percent, info=Non
 def main():
     ap = argparse.ArgumentParser(description="Download an exact clip from a YouTube video.")
     ap.add_argument("url")
-    ap.add_argument("start", type=parse_time, help="e.g. 90 or 1:30 or 1:02:03")
-    ap.add_argument("end", type=parse_time)
+    ap.add_argument("start", type=parse_time, nargs="?", help="e.g. 90 or 1:30 or 1:02:03. Leave out START and END for the whole video")
+    ap.add_argument("end", type=parse_time, nargs="?")
     ap.add_argument("-o", "--out", default=".", help="folder or .mp4 file (default: current folder)")
     ap.add_argument("--res", type=int, default=1080, help="max height, e.g. 720 (default 1080)")
     a = ap.parse_args()
     try:
-        made = make_clip(a.url, a.start, a.end, a.res, a.out)
+        if a.start is None:
+            made = whole_video(a.url, a.res, a.out)
+        elif a.end is None:
+            ap.error("give both START and END, or neither to download the whole video")
+        else:
+            made = make_clip(a.url, a.start, a.end, a.res, a.out)
     except (Unfixable, RuntimeError) as err:
         print(f"Failed. {err}", file=sys.stderr)
         return 1
-    print(f"Saved {a.end - a.start:g}s clip: {made.resolve()}")
+    print(f"Saved: {made.resolve()}")
     return 0
 
 
