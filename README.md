@@ -120,7 +120,7 @@ What else the page does:
 | Whole video | Tick **Download the whole video** |
 | Vertical video | **Save as > Vertical video (9:16)** crops the middle of the picture for Reels and Shorts |
 | Sound only | **Save as > Sound only (mp3)** |
-| Remembered folder | Choose a folder once. Chrome and Edge save straight into it from then on. Other browsers use their normal downloads folder |
+| Save folder | Files go straight into your Downloads folder. Press **Change** to pick any other folder, and it is remembered. A phone using `--lan` gets a normal browser download instead |
 | Remembered settings | Quality and "Save as" stay as you left them |
 
 To use it from your phone, start it with `--lan` and open the address it prints. The phone must be on the same Wi-Fi.

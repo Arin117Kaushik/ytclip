@@ -154,8 +154,8 @@
     </div>
 
     <div class="folder panel" id="folder" hidden>
-      <p><span>Save to</span><b id="folderName">No folder chosen yet</b></p>
-      <button type="button" class="second" id="pick">Choose folder</button>
+      <p><span>Save to</span><b id="folderName"></b></p>
+      <button type="button" class="second" id="pick">Change</button>
     </div>
 
     <button id="go" type="submit">Download clip</button>
@@ -193,9 +193,8 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const TIME = /^\d+(:\d{1,2}){0,2}(\.\d+)?$/;
-const canPickFolder = "showDirectoryPicker" in window;
 let video = null;   // details of the link currently in the box
-let folder = null;  // where clips are saved, when the browser can write to a folder
+let folder = null;  // the folder on this computer that downloads go to, or null on a phone
 let lookupTimer = 0;
 let rowCount = 0;
 
@@ -225,40 +224,19 @@ for (const id of ["res", "mode"]) {
   $(id).addEventListener("change", () => { try { localStorage.setItem(id, $(id).value); } catch {} });
 }
 
-/* The save folder is remembered in the browser's own database, which can hold folder handles. */
-function folderStore(mode) {
-  return new Promise((done, fail) => {
-    const opening = indexedDB.open("ytclip", 1);
-    opening.onupgradeneeded = () => opening.result.createObjectStore("kept");
-    opening.onsuccess = () => done(opening.result.transaction("kept", mode).objectStore("kept"));
-    opening.onerror = () => fail(opening.error);
-  });
+/* On this computer the app writes the file itself, since browsers may not write to Downloads.
+   A phone on the Wi-Fi has no folder here, so it gets a normal browser download. */
+async function loadFolder(pick = false) {
+  folder = (await (await post("/api/folder", { pick })).json()).folder;
+  $("folder").hidden = !folder;
+  $("folderName").textContent = folder || "";
 }
-
-function showFolder() {
-  $("folderName").textContent = folder ? folder.name : "No folder chosen yet";
-  $("pick").textContent = folder ? "Change" : "Choose folder";
-}
-
-async function chooseFolder() {
-  try {
-    folder = await showDirectoryPicker({ mode: "readwrite", id: "ytclip" });
-  } catch {
-    return false;  // closed the dialog
-  }
-  (await folderStore("readwrite")).put(folder, "folder");
-  showFolder();
-  return true;
-}
-
-if (canPickFolder) {
-  $("folder").hidden = false;
-  $("pick").addEventListener("click", chooseFolder);
-  folderStore("readonly").then((store) => {
-    const asking = store.get("folder");
-    asking.onsuccess = () => { folder = asking.result || null; showFolder(); };
-  }).catch(() => {});
-}
+loadFolder().catch(() => {});
+$("pick").addEventListener("click", async () => {
+  $("pick").disabled = true;  // the folder dialog is open
+  await loadFolder(true).catch((err) => status(err.message, true));
+  $("pick").disabled = false;
+});
 
 /* Clip rows */
 function addRow() {
@@ -374,17 +352,9 @@ async function waitFor(job, tag) {
   }
 }
 
-async function save(job, name) {
-  const file = "/api/file/" + job;
-  if (!folder) {
-    // Phones and browsers that cannot write to a folder: hand it to the normal download.
-    Object.assign(document.createElement("a"), { href: file, download: name }).click();
-    return;
-  }
-  const reply = await fetch(file);
-  if (!reply.ok) throw new Error("The finished file could not be read back.");
-  const target = await folder.getFileHandle(name, { create: true });
-  await reply.body.pipeTo(await target.createWritable());
+function save(job, done) {
+  if (done.saved) return;  // already written into the folder
+  Object.assign(document.createElement("a"), { href: "/api/file/" + job, download: done.name }).click();
 }
 
 $("form").addEventListener("submit", async (event) => {
@@ -398,22 +368,10 @@ $("form").addEventListener("submit", async (event) => {
       if (problem) return status((jobs.length > 1 ? `Clip ${i + 1}: ` : "") + problem, true);
     }
   }
-  // Folder access has to be asked for right on the click.
-  if (canPickFolder) {
-    if (!folder && !(await chooseFolder())) return;
-    try {
-      if (await folder.requestPermission({ mode: "readwrite" }) !== "granted") return status("Allow access to the folder so the file can be saved there.", true);
-    } catch {
-      folder = null;
-      showFolder();
-      return status("That folder is gone. Choose another one.", true);
-    }
-  }
-
   $("go").disabled = true;
   $("progress").hidden = false;
   const failed = [];
-  let lastName = "";
+  let lastName = "", inFolder = false;
   for (const [i, job] of jobs.entries()) {
     const tag = jobs.length > 1 ? `Clip ${i + 1} of ${jobs.length}: ` : "";
     $("fill").style.width = "0%";
@@ -421,8 +379,9 @@ $("form").addEventListener("submit", async (event) => {
     try {
       const started = await (await post("/api/clip", { url: link(), res: Number($("res").value), mode: $("mode").value, ...job })).json();
       const done = await waitFor(started.job, tag);
-      await save(started.job, done.name);
+      save(started.job, done);
       lastName = done.name;
+      inFolder = done.saved;
     } catch (err) {
       failed.push((jobs.length > 1 ? `Clip ${i + 1}: ` : "") + err.message);
     }
@@ -431,7 +390,7 @@ $("form").addEventListener("submit", async (event) => {
   const saved = jobs.length - failed.length;
   $("fill").style.width = saved ? "100%" : "0%";
   $("progress").hidden = !saved;
-  const where = folder ? " to " + folder.name : ". Your browser is saving it";
+  const where = inFolder ? " to " + (folder || "your folder") : ". Your browser is saving it";
   const what = saved === 1 ? lastName : saved + " files";
   if (!failed.length) status("Saved " + what + where + ".");
   else status((saved ? "Saved " + what + where + ". " : "") + "That did not work. " + failed.join(" "), true);

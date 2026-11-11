@@ -203,7 +203,7 @@ def whole_then_cut(url, start, end, res, out_for, net, tick, mode):
 def download_full(url, res, net, folder, tick):
     """Download the whole video into `folder` with yt-dlp's own downloader. Returns (file, title)."""
     cmd = ytdlp(url, res, net, "--merge-output-format", "mp4", "--progress", "--newline",
-                "--print", "after_move:%(title)s", "-o", str(Path(folder) / "full.%(ext)s"))
+                "--print", "after_move:TITLE=%(title)s", "-o", str(Path(folder) / "full.%(ext)s"))
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, encoding="utf-8", errors="replace", **HIDDEN)
     title, problem, files_done = "clip", "full download failed", 0
@@ -211,15 +211,15 @@ def download_full(url, res, net, folder, tick):
         for line in proc.stdout:
             line = line.strip()
             percent = re.match(r"\[download\]\s+([\d.]+)%", line)
-            if percent:
+            if line.startswith("TITLE="):  # marked, because a title can itself start with "["
+                title = line[6:]
+            elif percent:
                 # Video and audio arrive as two files. The video is nearly all of it, so the
                 # bar follows the video and then waits at 99 for the audio and the merge.
                 tick(99 if files_done else min(99, float(percent.group(1))))
                 files_done += percent.group(1) == "100.0" or line.startswith("[download] 100%")
             elif line.startswith("ERROR"):
                 problem = line[:200]
-            elif line and not line.startswith(("[", "WARNING")):
-                title = line
         proc.wait()
     finally:
         proc.kill()
@@ -283,7 +283,13 @@ def namer(dest, mode, suffix=""):
     """Make the output folder and return a function that turns a video title into the output path."""
     dest = Path(dest).expanduser()
     is_file = dest.suffix.lower() in (".mp4", ".mp3")
-    (dest.parent if is_file else dest).mkdir(parents=True, exist_ok=True)
+    folder = dest.parent if is_file else dest
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        raise Unfixable(f"Cannot save to {folder}. Choose another folder.") from None
+    if mode == "vertical":
+        suffix += " vertical"  # or it would replace the normal clip of the same part
     return lambda title: dest if is_file else dest / f"{safe_name(title)}{suffix}{extension(mode)}"
 
 
@@ -308,13 +314,24 @@ def whole_video(url, res, dest, say=print, tick=show_percent, info=None, mode="v
     out_for = namer(dest, mode)
     if mode != "video":
         # These need a re-encode, which is the clip path with the clip being everything.
-        info = info or lookup(url, res)
-        job = (url, 0, info["duration"], res, out_for)
-        return try_routes([
-            ("Downloading the whole video", lambda: section(*job, IPV4, tick, mode, info)),
-            ("Trying the other network route", lambda: section(*job, AUTO, tick, mode)),
-            ("Downloading the full video and converting it", lambda: whole_then_cut(*job, IPV4, tick, mode)),
-        ], say)
+        def convert():
+            with tempfile.TemporaryDirectory() as tmp:
+                full, title = download_full(url, res, IPV4, tmp, tick)
+                lengths = stream_lengths(full)
+                streams = streams_for(mode, "audio" in lengths)
+                out = out_for(title)
+                ffmpeg_cut([(str(full), [])], 0, max(lengths.values()), out, tick, streams, mode)
+                return checked(out, max(lengths.values()), streams)
+
+        steps = [("Downloading the full video and converting it", convert)]
+        try:
+            info = info or lookup(url, res)
+            job = (url, 0, info["duration"], res, out_for)
+            steps = [("Downloading the whole video", lambda: section(*job, IPV4, tick, mode, info)),
+                     ("Trying the other network route", lambda: section(*job, AUTO, tick, mode)), *steps]
+        except RuntimeError:
+            pass  # no lookup, so the direct routes cannot start. The full download still can.
+        return try_routes(steps, say)
 
     def fetch(net):
         with tempfile.TemporaryDirectory() as tmp:

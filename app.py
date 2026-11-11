@@ -9,9 +9,11 @@ Standard library only. The clip work is done by clip.py.
 import argparse
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -29,6 +31,37 @@ JOBS = {}
 INFO = {}  # (url, res) -> (time fetched, yt-dlp info)
 # ponytail: finished clips stay in WORK until the server stops. Add a sweep if it runs for days.
 WORK = Path(tempfile.mkdtemp(prefix="ytclip-"))
+SETTINGS = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".config") / "ytclip" / "settings.json"
+# Runs in its own process: a folder dialog needs a main thread, and the server's is busy.
+DIALOG = """
+import sys, tkinter, tkinter.filedialog
+root = tkinter.Tk()
+root.withdraw()
+root.attributes("-topmost", True)
+sys.stdout.reconfigure(encoding="utf-8")
+print(tkinter.filedialog.askdirectory(initialdir=sys.argv[1], title="Save ytclip downloads to"))
+"""
+
+
+def save_folder():
+    """Where this computer's downloads go. The browser is not allowed to write to Downloads, so the app does."""
+    try:
+        return Path(json.loads(SETTINGS.read_text(encoding="utf-8"))["folder"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return Path.home() / "Downloads"
+
+
+def pick_folder():
+    """Show the system's folder dialog and remember the choice. Closing the dialog keeps the old folder."""
+    done = subprocess.run([sys.executable, "-c", DIALOG, str(save_folder())], capture_output=True,
+                          text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL)
+    if done.returncode != 0:
+        raise RuntimeError("The folder dialog could not be opened")
+    chosen = done.stdout.strip()
+    if chosen:
+        SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS.write_text(json.dumps({"folder": chosen}), encoding="utf-8")
+    return save_folder()
 
 
 def get_info(url, res):
@@ -40,7 +73,7 @@ def get_info(url, res):
     return info
 
 
-def run_job(job, url, start, end, res, mode):
+def run_job(job, url, start, end, res, mode, dest):
     def say(text):
         job.update(step=text.strip(), percent=0)
         job["log"].append(text.strip())  # so a failed route can be diagnosed from /api/job/<id>
@@ -53,9 +86,9 @@ def run_job(job, url, start, end, res, mode):
         cached = INFO.get((url, res))
         fresh = cached[1] if cached and time.time() - cached[0] < INFO_MAX_AGE else None
         if start is None:
-            made = clip.whole_video(url, res, WORK / job["id"], say, tick, fresh, mode)
+            made = clip.whole_video(url, res, dest, say, tick, fresh, mode)
         else:
-            made = clip.make_clip(url, start, end, res, WORK / job["id"], say, tick, fresh, mode)
+            made = clip.make_clip(url, start, end, res, dest, say, tick, fresh, mode)
         job.update(state="done", path=made, name=made.name, percent=100)
     except Exception as err:  # a job must always end in "done" or "error", or the page waits forever
         INFO.pop((url, res), None)
@@ -76,7 +109,9 @@ class Handler(BaseHTTPRequestHandler):
     def allowed(self):
         """Only this page may call the API. Stops other websites driving the downloader."""
         host = self.headers.get("Host", "")
-        if not self.lan and host.split(":")[0] not in ("127.0.0.1", "localhost"):
+        name = host.rsplit(":", 1)[0]
+        # A site name could be pointed at this computer by someone else. A bare address cannot.
+        if name not in ("127.0.0.1", "localhost") and not (self.lan and re.fullmatch(r"[\d.]+", name)):
             return False
         origin = self.headers.get("Origin")
         return origin is None or urlsplit(origin).netloc == host
@@ -99,7 +134,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_body(PAGE.read_bytes(), "text/html; charset=utf-8")
         job = JOBS.get(parts[-1]) if len(parts) == 3 and parts[0] == "api" else None
         if job and parts[1] == "job":
-            return self.send_json({k: job[k] for k in ("state", "step", "percent", "error", "name", "log")})
+            return self.send_json({k: job[k] for k in ("state", "step", "percent", "error", "name", "log", "saved")})
         if job and parts[1] == "file" and job["state"] == "done":
             self.send_response(200)
             self.send_header("Content-Type", "audio/mpeg" if job["name"].endswith(".mp3") else "video/mp4")
@@ -115,6 +150,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": "Not allowed"}, 403)
         try:
             ask = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            # Only this computer saves straight to a folder. A phone on the Wi-Fi gets a normal download.
+            local = self.client_address[0] in ("127.0.0.1", "::1")
+            if self.path == "/api/folder":
+                if not local:
+                    return self.send_json({"folder": None})
+                folder = pick_folder() if ask.get("pick") else save_folder()
+                return self.send_json({"folder": str(folder), "name": folder.name or str(folder)})
             url, res = str(ask["url"]).strip(), int(ask.get("res", 1080))
             if self.path == "/api/info":
                 info = get_info(url, res)
@@ -130,9 +172,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not ask.get("whole"):
                     start, end = clip.parse_time(str(ask["start"])), clip.parse_time(str(ask["end"]))
                 job = {"id": uuid.uuid4().hex, "state": "working", "step": "Starting...",
-                       "percent": 0, "error": "", "name": "", "path": None, "log": []}
+                       "percent": 0, "error": "", "name": "", "path": None, "log": [], "saved": local}
                 JOBS[job["id"]] = job
-                threading.Thread(target=run_job, args=(job, url, start, end, res, mode), daemon=True).start()
+                threading.Thread(target=run_job, args=(job, url, start, end, res, mode, save_folder() if local else WORK / job["id"]), daemon=True).start()
                 return self.send_json({"job": job["id"]})
             self.send_json({"error": "Not found"}, 404)
         except (clip.Unfixable, RuntimeError, argparse.ArgumentTypeError) as err:
