@@ -64,6 +64,8 @@ python clip.py URL START END [-o FOLDER_OR_FILE] [--res HEIGHT]
 | `START`, `END` | Seconds, `m:ss` or `h:mm:ss`, decimals allowed | `90`, `1:30`, `1:02:03.5` |
 | `-o` | Folder to save into, or a full `.mp4` filename. Default is the current folder | `-o D:\Clips` or `-o intro.mp4` |
 | `--res` | Maximum height. Default is `1080` | `--res 720` |
+| `--vertical` | Crop to 9:16 for Reels and Shorts (keeps the middle of the picture) | `--vertical` |
+| `--audio` | Save only the sound, as an `.mp3` | `--audio` |
 
 Leave out `START` and `END` to download the whole video:
 
@@ -106,8 +108,20 @@ powershell -ExecutionPolicy Bypass -File install-shortcuts.ps1
 After that you just double-click the icon. No terminal, no commands. If you move the repo folder, run the script again.
 
 1. Paste a YouTube link. The title, thumbnail and length appear so you know it is the right video.
-2. Type the start and end, and pick a quality.
-3. Press **Download clip**. Chrome and Edge ask where to save it. Other browsers save to their normal downloads folder.
+2. Type the start and end, and press **Download clip**.
+
+What else the page does:
+
+| Feature | How it works |
+|---|---|
+| Several clips at once | **Add another clip** adds a start and end pair. One press downloads them all, with a single lookup on YouTube |
+| Preview | **Preview** shows the first and last frame of a clip before you download it |
+| Timestamp links | A link copied with "Copy video URL at current time" fills in the start for you |
+| Whole video | Tick **Download the whole video** |
+| Vertical video | **Save as > Vertical video (9:16)** crops the middle of the picture for Reels and Shorts |
+| Sound only | **Save as > Sound only (mp3)** |
+| Remembered folder | Choose a folder once. Chrome and Edge save straight into it from then on. Other browsers use their normal downloads folder |
+| Remembered settings | Quality and "Save as" stay as you left them |
 
 To use it from your phone, start it with `--lan` and open the address it prints. The phone must be on the same Wi-Fi.
 

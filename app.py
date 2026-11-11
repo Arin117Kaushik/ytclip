@@ -35,15 +35,12 @@ def get_info(url, res):
     cached = INFO.get((url, res))
     if cached and time.time() - cached[0] < INFO_MAX_AGE:
         return cached[1]
-    try:
-        info = clip.resolve(url, res, clip.IPV4)
-    except RuntimeError:
-        info = clip.resolve(url, res, clip.AUTO)
+    info = clip.lookup(url, res)
     INFO[(url, res)] = (time.time(), info)
     return info
 
 
-def run_job(job, url, start, end, res):
+def run_job(job, url, start, end, res, mode):
     def say(text):
         job.update(step=text.strip(), percent=0)
         job["log"].append(text.strip())  # so a failed route can be diagnosed from /api/job/<id>
@@ -56,9 +53,9 @@ def run_job(job, url, start, end, res):
         cached = INFO.get((url, res))
         fresh = cached[1] if cached and time.time() - cached[0] < INFO_MAX_AGE else None
         if start is None:
-            made = clip.whole_video(url, res, WORK / job["id"], say, tick)
+            made = clip.whole_video(url, res, WORK / job["id"], say, tick, fresh, mode)
         else:
-            made = clip.make_clip(url, start, end, res, WORK / job["id"], say, tick, fresh)
+            made = clip.make_clip(url, start, end, res, WORK / job["id"], say, tick, fresh, mode)
         job.update(state="done", path=made, name=made.name, percent=100)
     except Exception as err:  # a job must always end in "done" or "error", or the page waits forever
         INFO.pop((url, res), None)
@@ -84,31 +81,28 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         return origin is None or urlsplit(origin).netloc == host
 
-    def send_json(self, data, status=200):
-        body = json.dumps(data).encode()
+    def send_body(self, body, kind, status=200):
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def send_json(self, data, status=200):
+        self.send_body(json.dumps(data).encode(), "application/json", status)
 
     def do_GET(self):
         if not self.allowed():
             return self.send_json({"error": "Not allowed"}, 403)
         parts = self.path.split("?")[0].strip("/").split("/")
         if parts == [""]:
-            body = PAGE.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            return self.wfile.write(body)
+            return self.send_body(PAGE.read_bytes(), "text/html; charset=utf-8")
         job = JOBS.get(parts[-1]) if len(parts) == 3 and parts[0] == "api" else None
         if job and parts[1] == "job":
             return self.send_json({k: job[k] for k in ("state", "step", "percent", "error", "name", "log")})
         if job and parts[1] == "file" and job["state"] == "done":
             self.send_response(200)
-            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Type", "audio/mpeg" if job["name"].endswith(".mp3") else "video/mp4")
             self.send_header("Content-Length", str(job["path"].stat().st_size))
             self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(job['name'])}")
             self.end_headers()
@@ -126,14 +120,19 @@ class Handler(BaseHTTPRequestHandler):
                 info = get_info(url, res)
                 return self.send_json({"title": info["title"], "duration": info.get("duration"),
                                        "thumbnail": info.get("thumbnail"), "name": clip.safe_name(info["title"])})
+            if self.path == "/api/frame":
+                return self.send_body(clip.frame(get_info(url, res), float(ask["at"])), "image/jpeg")
             if self.path == "/api/clip":
+                mode = ask.get("mode", "video")
+                if mode not in clip.ENCODE:
+                    raise ValueError(mode)
                 start = end = None  # None means the whole video
                 if not ask.get("whole"):
                     start, end = clip.parse_time(str(ask["start"])), clip.parse_time(str(ask["end"]))
                 job = {"id": uuid.uuid4().hex, "state": "working", "step": "Starting...",
                        "percent": 0, "error": "", "name": "", "path": None, "log": []}
                 JOBS[job["id"]] = job
-                threading.Thread(target=run_job, args=(job, url, start, end, res), daemon=True).start()
+                threading.Thread(target=run_job, args=(job, url, start, end, res, mode), daemon=True).start()
                 return self.send_json({"job": job["id"]})
             self.send_json({"error": "Not found"}, 404)
         except (clip.Unfixable, RuntimeError, argparse.ArgumentTypeError) as err:

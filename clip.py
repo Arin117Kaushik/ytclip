@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ytclip: download an exact clip from a YouTube video without fetching the whole thing.
 
-    python clip.py URL START END [-o FOLDER_OR_FILE] [--res 1080]
+    python clip.py URL START END [-o FOLDER_OR_FILE] [--res 1080] [--vertical | --audio]
     python clip.py URL                   the whole video
 
 Needs yt-dlp, ffmpeg and ffprobe on PATH. Standard library only.
@@ -21,8 +21,15 @@ import tempfile
 import time
 from pathlib import Path
 
-ENCODE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
-          "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
+VIDEO = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
+# How each output mode is encoded. "vertical" keeps the middle 9:16 slice for Reels and Shorts;
+# the min() leaves a video that is already vertical alone.
+ENCODE = {
+    "video": VIDEO,
+    "vertical": ["-vf", "crop='min(iw,trunc(ih*9/16/2)*2)':ih", *VIDEO],
+    "audio": ["-c:a", "libmp3lame", "-b:a", "192k"],
+}
 TOLERANCE = 0.5  # seconds a clip may differ from the requested length
 # YouTube often bot-blocks one of a connection's two addresses (IPv4 / IPv6) but not the other.
 IPV4, AUTO = ["--force-ipv4"], []
@@ -48,6 +55,10 @@ def safe_name(title):
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", title)[:80].strip(" .") or "clip"
 
 
+def extension(mode):
+    return ".mp3" if mode == "audio" else ".mp4"
+
+
 # The web app runs without a console. Without these, every yt-dlp and ffmpeg call
 # would flash a black window, and inheriting the missing stdin can fail on Windows.
 HIDDEN = {"stdin": subprocess.DEVNULL, "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
@@ -62,8 +73,8 @@ class Unfixable(Exception):
 
 
 # yt-dlp errors that no other route can get past.
-PERMANENT = ("private video", "video unavailable", "video is unavailable", "video is not available", "members-only", "confirm your age",
-             "unsupported url", "incomplete youtube id", "not a valid url")
+PERMANENT = ("private video", "video unavailable", "video is unavailable", "video is not available",
+             "members-only", "confirm your age", "unsupported url", "incomplete youtube id", "not a valid url")
 
 
 def ytdlp(url, res, net, *extra):
@@ -85,27 +96,50 @@ def resolve(url, res, net):
     return json.loads(done.stdout)
 
 
+def lookup(url, res):
+    """resolve() over IPv4, then over the default route."""
+    try:
+        return resolve(url, res, IPV4)
+    except RuntimeError:
+        return resolve(url, res, AUTO)
+
+
 def show_percent(percent):
     print(f"\r  {percent:3.0f}%", end="" if percent < 100 else "\n", flush=True)
 
 
-def ffmpeg_cut(inputs, start, length, out, tick, audio=True):
-    """Encode `length` seconds starting at `start`. `inputs` is a list of (address, headers)."""
+def remote(fmt):
+    """ffmpeg input options for reading one of YouTube's streams."""
+    headers = fmt.get("http_headers") or {"User-Agent": "Mozilla/5.0"}
+    # YouTube throttles open-ended requests to ~50 KB/s. Asking in 5 MB pieces
+    # avoids that (needs ffmpeg from 2025 or newer).
+    return ["-request_size", "5000000",
+            # YouTube drops the audio connection while a slow encode keeps it idle.
+            "-reconnect", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "5",
+            "-rw_timeout", "30000000",  # give up if the network stalls for 30s
+            "-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+
+
+def streams_for(mode, has_audio):
+    """Which streams the output must contain."""
+    if mode == "audio":
+        if not has_audio:
+            raise Unfixable("This video has no sound to save")
+        return ("audio",)
+    return ("video", "audio") if has_audio else ("video",)
+
+
+def ffmpeg_cut(inputs, start, length, out, tick, streams, mode):
+    """Encode `length` seconds starting at `start`. `inputs` is a list of (address, input options)."""
     cmd = ["ffmpeg", "-y", "-v", "error", "-nostats", "-progress", "pipe:1"]
-    for address, headers in inputs:
-        if headers:  # a remote stream
-            # YouTube throttles open-ended requests to ~50 KB/s. Asking in 5 MB pieces
-            # avoids that (needs ffmpeg from 2025 or newer).
-            cmd += ["-request_size", "5000000",
-                    # YouTube drops the audio connection while a slow encode keeps it idle.
-                    "-reconnect", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "5",
-                    "-rw_timeout", "30000000",  # give up if the network stalls for 30s
-                    "-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-        cmd += ["-ss", str(start), "-i", address]
-    cmd += ["-t", str(length), "-map", "0:v:0"]
-    if audio:
+    for address, options in inputs:
+        cmd += [*options, "-ss", str(start), "-i", address]
+    cmd += ["-t", str(length)]
+    if "video" in streams:
+        cmd += ["-map", "0:v:0"]
+    if "audio" in streams:
         cmd += ["-map", f"{len(inputs) - 1}:a:0"]
-    cmd += [*ENCODE, str(out)]
+    cmd += [*ENCODE[mode], str(out)]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, encoding="utf-8", errors="replace", **HIDDEN)
     finished, errors = False, []
@@ -130,34 +164,40 @@ def ffmpeg_cut(inputs, start, length, out, tick, audio=True):
     tick(100)
 
 
-def section(url, start, end, res, out_for, net, tick, info=None):
+def has_sound(fmt):
+    return fmt.get("acodec") not in (None, "none")
+
+
+def section(url, start, end, res, out_for, net, tick, mode, info=None):
     """Fetch only the wanted section. `info` is an earlier resolve() result to reuse."""
     info = info or resolve(url, res, net)
     if end > (info.get("duration") or end) + TOLERANCE:
         raise Unfixable(f"END is past the end of the video, which is {info['duration']:g}s long")
     formats = info.get("requested_formats") or [info]
-    audio = any(f.get("acodec") not in (None, "none") for f in formats)
+    streams = streams_for(mode, any(has_sound(f) for f in formats))
+    if mode == "audio":
+        formats = [f for f in formats if has_sound(f)]  # no need to fetch the picture
     out = out_for(info["title"])
-    inputs = [(f["url"], f.get("http_headers") or {"User-Agent": "Mozilla/5.0"}) for f in formats]
+    inputs = [(f["url"], remote(f)) for f in formats]
     # Fresh stream addresses answer 403 for the first second or two, so retry the open.
     for attempt in range(5):
         time.sleep(2)
         try:
-            ffmpeg_cut(inputs, start, end - start, out, tick, audio)
-            return checked(out, end - start, audio)
+            ffmpeg_cut(inputs, start, end - start, out, tick, streams, mode)
+            return checked(out, end - start, streams)
         except RuntimeError as err:
             if "403" not in str(err) or attempt == 4:
                 raise
 
 
-def whole_then_cut(url, start, end, res, out_for, net, tick):
+def whole_then_cut(url, start, end, res, out_for, net, tick, mode):
     """Last resort: fetch the full video with yt-dlp's own downloader, cut it locally."""
     with tempfile.TemporaryDirectory() as tmp:
         full, title = download_full(url, res, net, tmp, tick)
-        audio = "audio" in stream_lengths(full)
+        streams = streams_for(mode, "audio" in stream_lengths(full))
         out = out_for(title)
-        ffmpeg_cut([(str(full), None)], start, end - start, out, tick, audio)
-        return checked(out, end - start, audio)
+        ffmpeg_cut([(str(full), [])], start, end - start, out, tick, streams, mode)
+        return checked(out, end - start, streams)
 
 
 def download_full(url, res, net, folder, tick):
@@ -189,36 +229,13 @@ def download_full(url, res, net, folder, tick):
     return full, title
 
 
-def whole_video(url, res, dest, say=print, tick=show_percent):
-    """Download the whole video as an .mp4 and return its path. `dest` is a folder or an .mp4 path."""
-    dest = Path(dest).expanduser()
-    is_file = dest.suffix.lower() == ".mp4"
-    (dest.parent if is_file else dest).mkdir(parents=True, exist_ok=True)
-
-    def fetch(net):
-        with tempfile.TemporaryDirectory() as tmp:
-            full, title = download_full(url, res, net, tmp, tick)
-            if not stream_lengths(full).get("video"):
-                raise RuntimeError("the download has no video in it")
-            out = dest if is_file else dest / f"{safe_name(title)}.mp4"
-            shutil.move(full, out)
-            tick(100)
-            return out
-
-    return try_routes([
-        ("Downloading the whole video", lambda: fetch(IPV4)),
-        ("Trying the other network route", lambda: fetch(AUTO)),
-        ("Updating yt-dlp and trying again", lambda: run(["yt-dlp", "-U"]) and fetch(IPV4)),
-    ], say)
-
-
 def stream_lengths(path):
     """{'video': seconds, 'audio': seconds} for the streams a file has."""
     probe = run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json", str(path)])
     return {s["codec_type"]: float(s.get("duration") or 0) for s in json.loads(probe.stdout)["streams"]}
 
 
-def verify(path, want, audio=True):
+def verify(path, want, streams=("video", "audio")):
     """Return None if the file is a good clip of `want` seconds, else the reason it is not."""
     if not path.is_file() or path.stat().st_size < 10_000:
         return "no output file"
@@ -227,7 +244,7 @@ def verify(path, want, audio=True):
     except (ValueError, KeyError):
         return "file is not readable"
     # Checked per stream: a dropped connection can cut the audio short while the video is whole.
-    for kind in ("video", "audio") if audio else ("video",):
+    for kind in streams:
         if kind not in lengths:
             return f"no {kind} in the file"
         if abs(lengths[kind] - want) > TOLERANCE:
@@ -238,36 +255,13 @@ def verify(path, want, audio=True):
     return None
 
 
-def checked(out, want, audio):
+def checked(out, want, streams):
     """Return `out` if it is a good clip, otherwise delete it and raise."""
-    problem = verify(out, want, audio)
+    problem = verify(out, want, streams)
     if problem:
         out.unlink(missing_ok=True)
         raise RuntimeError(problem)
     return out
-
-
-def make_clip(url, start, end, res, dest, say=print, tick=show_percent, info=None):
-    """Make the clip and return its path. `dest` is a folder or an .mp4 path.
-
-    Raises Unfixable for a bad request and RuntimeError when every route failed.
-    """
-    if end <= start:
-        raise Unfixable("END must be after START")
-    dest = Path(dest).expanduser()
-    is_file = dest.suffix.lower() == ".mp4"
-    (dest.parent if is_file else dest).mkdir(parents=True, exist_ok=True)
-
-    def out_for(title):
-        return dest if is_file else dest / f"{safe_name(title)} [{label(start)}-{label(end)}].mp4"
-
-    job = (url, start, end, res, out_for)
-    return try_routes([
-        ("Downloading just the clip", lambda: section(*job, IPV4, tick, info)),
-        ("Trying the other network route", lambda: section(*job, AUTO, tick)),
-        ("Updating yt-dlp and trying again", lambda: run(["yt-dlp", "-U"]) and section(*job, IPV4, tick)),
-        ("Downloading the full video and cutting it locally", lambda: whole_then_cut(*job, IPV4, tick)),
-    ], say)
 
 
 def try_routes(steps, say):
@@ -285,21 +279,96 @@ def try_routes(steps, say):
     raise RuntimeError(f"Every route failed. Last problem: {problem}")
 
 
+def namer(dest, mode, suffix=""):
+    """Make the output folder and return a function that turns a video title into the output path."""
+    dest = Path(dest).expanduser()
+    is_file = dest.suffix.lower() in (".mp4", ".mp3")
+    (dest.parent if is_file else dest).mkdir(parents=True, exist_ok=True)
+    return lambda title: dest if is_file else dest / f"{safe_name(title)}{suffix}{extension(mode)}"
+
+
+def make_clip(url, start, end, res, dest, say=print, tick=show_percent, info=None, mode="video"):
+    """Make the clip and return its path. `dest` is a folder or a file path.
+
+    Raises Unfixable for a bad request and RuntimeError when every route failed.
+    """
+    if end <= start:
+        raise Unfixable("END must be after START")
+    job = (url, start, end, res, namer(dest, mode, f" [{label(start)}-{label(end)}]"))
+    return try_routes([
+        ("Downloading just the clip", lambda: section(*job, IPV4, tick, mode, info)),
+        ("Trying the other network route", lambda: section(*job, AUTO, tick, mode)),
+        ("Updating yt-dlp and trying again", lambda: run(["yt-dlp", "-U"]) and section(*job, IPV4, tick, mode)),
+        ("Downloading the full video and cutting it locally", lambda: whole_then_cut(*job, IPV4, tick, mode)),
+    ], say)
+
+
+def whole_video(url, res, dest, say=print, tick=show_percent, info=None, mode="video"):
+    """Download the whole video and return its path. `dest` is a folder or a file path."""
+    out_for = namer(dest, mode)
+    if mode != "video":
+        # These need a re-encode, which is the clip path with the clip being everything.
+        info = info or lookup(url, res)
+        job = (url, 0, info["duration"], res, out_for)
+        return try_routes([
+            ("Downloading the whole video", lambda: section(*job, IPV4, tick, mode, info)),
+            ("Trying the other network route", lambda: section(*job, AUTO, tick, mode)),
+            ("Downloading the full video and converting it", lambda: whole_then_cut(*job, IPV4, tick, mode)),
+        ], say)
+
+    def fetch(net):
+        with tempfile.TemporaryDirectory() as tmp:
+            full, title = download_full(url, res, net, tmp, tick)
+            if not stream_lengths(full).get("video"):
+                raise RuntimeError("the download has no video in it")
+            out = out_for(title)
+            shutil.move(full, out)
+            tick(100)
+            return out
+
+    return try_routes([
+        ("Downloading the whole video", lambda: fetch(IPV4)),
+        ("Trying the other network route", lambda: fetch(AUTO)),
+        ("Updating yt-dlp and trying again", lambda: run(["yt-dlp", "-U"]) and fetch(IPV4)),
+    ], say)
+
+
+def frame(info, at):
+    """One small JPEG of the video at `at` seconds, for previews. `info` is a resolve() result."""
+    video = (info.get("requested_formats") or [info])[0]
+    cmd = ["ffmpeg", "-v", "error", *remote(video), "-ss", str(at), "-i", video["url"],
+           "-frames:v", "1", "-vf", "scale=-2:360", "-c:v", "mjpeg", "-f", "image2", "pipe:1"]
+    for _ in range(4):
+        done = subprocess.run(cmd, capture_output=True, **HIDDEN)
+        if done.stdout:
+            return done.stdout
+        if b"403" not in done.stderr:
+            break
+        time.sleep(2)  # fresh stream addresses answer 403 at first
+    raise RuntimeError("Could not read that frame")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Download an exact clip from a YouTube video.")
     ap.add_argument("url")
-    ap.add_argument("start", type=parse_time, nargs="?", help="e.g. 90 or 1:30 or 1:02:03. Leave out START and END for the whole video")
+    ap.add_argument("start", type=parse_time, nargs="?",
+                    help="e.g. 90 or 1:30 or 1:02:03. Leave out START and END for the whole video")
     ap.add_argument("end", type=parse_time, nargs="?")
-    ap.add_argument("-o", "--out", default=".", help="folder or .mp4 file (default: current folder)")
+    ap.add_argument("-o", "--out", default=".", help="folder or file (default: current folder)")
     ap.add_argument("--res", type=int, default=1080, help="max height, e.g. 720 (default 1080)")
+    shape = ap.add_mutually_exclusive_group()
+    shape.add_argument("--vertical", action="store_const", dest="mode", const="vertical",
+                       help="crop to 9:16 for Reels and Shorts")
+    shape.add_argument("--audio", action="store_const", dest="mode", const="audio", help="save only the sound, as mp3")
     a = ap.parse_args()
+    mode = a.mode or "video"
     try:
         if a.start is None:
-            made = whole_video(a.url, a.res, a.out)
+            made = whole_video(a.url, a.res, a.out, mode=mode)
         elif a.end is None:
             ap.error("give both START and END, or neither to download the whole video")
         else:
-            made = make_clip(a.url, a.start, a.end, a.res, a.out)
+            made = make_clip(a.url, a.start, a.end, a.res, a.out, mode=mode)
     except (Unfixable, RuntimeError) as err:
         print(f"Failed. {err}", file=sys.stderr)
         return 1
@@ -324,6 +393,8 @@ def self_test():
         pass
     else:
         raise AssertionError("an option was accepted as a link")
+    assert streams_for("video", True) == ("video", "audio") and streams_for("vertical", False) == ("video",)
+    assert streams_for("audio", True) == ("audio",) and extension("audio") == ".mp3"
     print("ok")
 
 

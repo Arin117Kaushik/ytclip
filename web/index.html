@@ -40,7 +40,7 @@
   }
   .lede { margin: 0 0 32px; color: var(--muted); }
   form { display: grid; gap: 16px; }
-  label { display: block; margin-bottom: 4px; font-size: 13px; font-weight: 600; letter-spacing: 0.02em; }
+  label, legend { display: block; margin-bottom: 4px; padding: 0; font-size: 13px; font-weight: 600; letter-spacing: 0.02em; }
   input, select {
     width: 100%;
     min-height: 56px;
@@ -58,7 +58,8 @@
   }
   .check { display: flex; align-items: center; gap: 12px; min-height: 48px; margin: 0; font-size: 16px; font-weight: 400; cursor: pointer; }
   .check input { width: 22px; height: 22px; min-height: 0; padding: 0; flex: none; accent-color: var(--white); }
-  .times { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  .pair { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+
   button {
     min-height: 48px;
     padding: 0 24px;
@@ -72,35 +73,40 @@
   button:hover { background: var(--red-hover); }
   button:active { background: #99161d; }
   button:disabled { background: #6d6d6e; cursor: default; }
+  button.second { min-height: 44px; padding: 0 16px; background: rgba(109, 109, 110, 0.7); font-size: 15px; }
+  button.second:hover { background: rgba(109, 109, 110, 0.5); }
+  button.second:active { background: rgba(109, 109, 110, 0.35); }
 
-  .video {
-    display: grid;
-    grid-template-columns: 160px 1fr;
-    gap: 16px;
-    align-items: center;
-    padding: 12px;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-  }
+  .panel { padding: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+  .video { display: grid; grid-template-columns: 160px 1fr; gap: 16px; align-items: center; }
   .video img { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; display: block; }
   .video h2 { margin: 0 0 4px; font-size: 16px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
-  .video p, .note { margin: 0; color: var(--muted); font-size: 14px; }
+  .video p, .note, figcaption { margin: 0; color: var(--muted); font-size: 14px; }
   @media (max-width: 420px) { .video { grid-template-columns: 1fr; } }
 
-  .status { min-height: 24px; overflow-wrap: anywhere; }
+  #clips { display: grid; gap: 16px; }
+  fieldset { min-width: 0; margin: 0; border: none; padding: 0; display: grid; gap: 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .frames { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  figure { margin: 0; }
+  .frames img { width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: contain; background: var(--field); border-radius: 4px; display: block; }
+
+  .folder { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+  .folder p { margin: 0; overflow-wrap: anywhere; }
+  .folder span { display: block; color: var(--muted); font-size: 13px; }
+
+  .status { min-height: 24px; margin: 0; overflow-wrap: anywhere; }
   .status.bad { color: var(--error); }
-  .bar { height: 4px; margin-top: 8px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .bar { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
   .bar div { height: 100%; width: 0; background: var(--white); transition: width 0.3s linear; }
   @media (prefers-reduced-motion: reduce) { .bar div { transition: none; } }
-  a { color: var(--white); display: inline-block; padding: 12px 0; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <main>
   <h1>Clip a YouTube video</h1>
-  <p class="lede">Paste a link, pick the start and end, and save only that part.</p>
+  <p class="lede">Paste a link, pick the parts you want, and save only those.</p>
 
   <form id="form" novalidate>
     <div>
@@ -108,7 +114,7 @@
       <input id="url" type="url" inputmode="url" autocomplete="off" placeholder="https://youtu.be/..." required>
     </div>
 
-    <div class="video" id="video" hidden>
+    <div class="video panel" id="video" hidden>
       <img id="thumb" alt="" width="320" height="180">
       <div>
         <h2 id="title"></h2>
@@ -122,15 +128,13 @@
       Download the whole video
     </label>
 
-    <div class="times">
-      <div class="cut">
-        <label for="start">Start</label>
-        <input id="start" inputmode="decimal" autocomplete="off" placeholder="1:30" required>
-      </div>
-      <div class="cut">
-        <label for="end">End</label>
-        <input id="end" inputmode="decimal" autocomplete="off" placeholder="2:00" required>
-      </div>
+    <div id="clips" class="cut"></div>
+    <div class="row cut">
+      <button type="button" class="second" id="add">Add another clip</button>
+    </div>
+    <p class="note cut">Times can be seconds (90), minutes (1:30) or hours (1:02:03).</p>
+
+    <div class="pair">
       <div>
         <label for="res">Quality</label>
         <select id="res">
@@ -139,37 +143,75 @@
           <option value="480">480p</option>
         </select>
       </div>
+      <div>
+        <label for="mode">Save as</label>
+        <select id="mode">
+          <option value="video">Video</option>
+          <option value="vertical">Vertical video (9:16)</option>
+          <option value="audio">Sound only (mp3)</option>
+        </select>
+      </div>
     </div>
-    <p class="note cut">Times can be seconds (90), minutes (1:30) or hours (1:02:03).</p>
+
+    <div class="folder panel" id="folder" hidden>
+      <p><span>Save to</span><b id="folderName">No folder chosen yet</b></p>
+      <button type="button" class="second" id="pick">Choose folder</button>
+    </div>
 
     <button id="go" type="submit">Download clip</button>
 
-    <div id="progress" hidden>
-      <div class="bar"><div id="fill"></div></div>
-    </div>
+    <div class="bar" id="progress" hidden><div id="fill"></div></div>
     <p class="status" id="status" role="status" aria-live="polite"></p>
   </form>
 </main>
 
+<template id="clipRow">
+  <fieldset>
+    <legend></legend>
+    <div class="pair">
+      <div>
+        <label>Start</label>
+        <input data-is="start" inputmode="decimal" autocomplete="off" placeholder="1:30">
+      </div>
+      <div>
+        <label>End</label>
+        <input data-is="end" inputmode="decimal" autocomplete="off" placeholder="2:00">
+      </div>
+    </div>
+    <div class="row">
+      <button type="button" class="second" data-is="preview">Preview</button>
+      <button type="button" class="second" data-is="remove">Remove</button>
+      <span class="note" data-is="note" role="status"></span>
+    </div>
+    <div class="frames" hidden>
+      <figure><img data-is="first" alt="First frame of this clip" width="640" height="360"><figcaption>Starts here</figcaption></figure>
+      <figure><img data-is="last" alt="Last frame of this clip" width="640" height="360"><figcaption>Ends here</figcaption></figure>
+    </div>
+  </fieldset>
+</template>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const TIME = /^\d+(:\d{1,2}){0,2}(\.\d+)?$/;
-let video = null;  // details of the link currently in the box
+const canPickFolder = "showDirectoryPicker" in window;
+let video = null;   // details of the link currently in the box
+let folder = null;  // where clips are saved, when the browser can write to a folder
 let lookupTimer = 0;
+let rowCount = 0;
 
 const seconds = (text) => text.trim().split(":").reduce((total, part) => total * 60 + Number(part), 0);
 const clock = (s) => {
   const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = Math.floor(s % 60);
   return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(sec).padStart(2, "0");
 };
-// Same shape as label() in clip.py, so names match the terminal tool.
-const stamp = (s) => Math.floor(s / 60) + "m" + String(Math.floor(s % 60)).padStart(2, "0") + "s";
+const link = () => $("url").value.trim();
+const rows = () => [...$("clips").children];
+const part = (row, name) => row.querySelector(`[data-is="${name}"]`);
 
 async function post(path, data) {
   const reply = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
-  const body = await reply.json();
-  if (!reply.ok) throw new Error(body.error || "Something went wrong");
-  return body;
+  if (!reply.ok) throw new Error((await reply.json()).error || "Something went wrong");
+  return reply;
 }
 
 function status(text, bad = false) {
@@ -177,16 +219,123 @@ function status(text, bad = false) {
   $("status").classList.toggle("bad", bad);
 }
 
+/* Settings that stick between visits. Private windows can refuse storage, so failures are ignored. */
+for (const id of ["res", "mode"]) {
+  try { $(id).value = localStorage.getItem(id) || $(id).value; } catch {}
+  $(id).addEventListener("change", () => { try { localStorage.setItem(id, $(id).value); } catch {} });
+}
+
+/* The save folder is remembered in the browser's own database, which can hold folder handles. */
+function folderStore(mode) {
+  return new Promise((done, fail) => {
+    const opening = indexedDB.open("ytclip", 1);
+    opening.onupgradeneeded = () => opening.result.createObjectStore("kept");
+    opening.onsuccess = () => done(opening.result.transaction("kept", mode).objectStore("kept"));
+    opening.onerror = () => fail(opening.error);
+  });
+}
+
+function showFolder() {
+  $("folderName").textContent = folder ? folder.name : "No folder chosen yet";
+  $("pick").textContent = folder ? "Change" : "Choose folder";
+}
+
+async function chooseFolder() {
+  try {
+    folder = await showDirectoryPicker({ mode: "readwrite", id: "ytclip" });
+  } catch {
+    return false;  // closed the dialog
+  }
+  (await folderStore("readwrite")).put(folder, "folder");
+  showFolder();
+  return true;
+}
+
+if (canPickFolder) {
+  $("folder").hidden = false;
+  $("pick").addEventListener("click", chooseFolder);
+  folderStore("readonly").then((store) => {
+    const asking = store.get("folder");
+    asking.onsuccess = () => { folder = asking.result || null; showFolder(); };
+  }).catch(() => {});
+}
+
+/* Clip rows */
+function addRow() {
+  const row = $("clipRow").content.firstElementChild.cloneNode(true);
+  rowCount += 1;
+  for (const name of ["start", "end"]) {
+    const input = part(row, name);
+    input.id = name + rowCount;
+    input.previousElementSibling.htmlFor = input.id;
+    input.addEventListener("input", () => { row.querySelector(".frames").hidden = true; });
+  }
+  part(row, "remove").addEventListener("click", () => { row.remove(); renumber(); });
+  part(row, "preview").addEventListener("click", () => preview(row));
+  $("clips").append(row);
+  renumber();
+  return row;
+}
+
+function renumber() {
+  const all = rows();
+  all.forEach((row, i) => {
+    row.querySelector("legend").textContent = "Clip " + (i + 1);
+    row.querySelector("legend").hidden = all.length === 1;
+    part(row, "remove").hidden = all.length === 1;
+  });
+  nameButton();
+}
+
+function nameButton() {
+  const count = rows().length;
+  $("go").textContent = $("whole").checked ? "Download video" : count > 1 ? `Download ${count} clips` : "Download clip";
+}
+
+/* Returns what is wrong with a row's times, or "" when they are fine. */
+function problemWith(row) {
+  const start = part(row, "start").value.trim(), end = part(row, "end").value.trim();
+  if (!TIME.test(start) || !TIME.test(end)) return "Enter the start and end as 90, 1:30 or 1:02:03.";
+  if (seconds(end) <= seconds(start)) return "The end has to be after the start.";
+  if (video && video.duration && seconds(end) > video.duration + 0.5) return "The end is past the end of the video (" + clock(video.duration) + ").";
+  return "";
+}
+
+async function preview(row) {
+  const note = part(row, "note");
+  const problem = !link() ? "Paste a YouTube link first." : problemWith(row);
+  if (problem) { note.textContent = problem; return; }
+  note.textContent = "Getting the frames...";
+  const start = seconds(part(row, "start").value), end = seconds(part(row, "end").value);
+  const shot = async (at) => URL.createObjectURL(await (await post("/api/frame", { url: link(), res: Number($("res").value), at })).blob());
+  try {
+    // The end frame is taken just before END, since END itself is the first frame left out.
+    const [first, last] = await Promise.all([shot(start), shot(Math.max(start, end - 0.05))]);
+    part(row, "first").src = first;
+    part(row, "last").src = last;
+    row.querySelector(".frames").hidden = false;
+    note.textContent = "";
+  } catch (err) {
+    note.textContent = "Could not get the frames. " + err.message;
+  }
+}
+
+/* Link box */
 async function lookUp() {
-  const url = $("url").value.trim();
-  video = null;
+  const url = link();
   $("video").hidden = true;
   if (!/^https?:\/\/\S+\.\S+/.test(url)) { $("lookup").hidden = true; return; }
+  // A link copied "at current time" carries the moment in it. Use it as the first clip's start.
+  const at = url.match(/[?&#](?:t|start)=(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?/);
+  const from = at ? (at[1] || 0) * 3600 + (at[2] || 0) * 60 + Number(at[3] || 0) : 0;
+  const firstStart = part(rows()[0], "start");
+  if (from && !firstStart.value) firstStart.value = clock(from);
+
   $("lookup").hidden = false;
   $("lookup").textContent = "Looking up the video...";
   try {
-    const found = await post("/api/info", { url, res: Number($("res").value) });
-    if ($("url").value.trim() !== url) return;  // the link changed while we waited
+    const found = await (await post("/api/info", { url, res: Number($("res").value) })).json();
+    if (link() !== url) return;  // the link changed while we waited
     video = found;
     $("title").textContent = found.title;
     $("length").textContent = found.duration ? clock(found.duration) + " long" : "";
@@ -205,84 +354,90 @@ $("url").addEventListener("input", () => {
   lookupTimer = setTimeout(lookUp, 500);
 });
 
+$("add").addEventListener("click", () => part(addRow(), "start").focus());
+
 $("whole").addEventListener("change", () => {
-  const whole = $("whole").checked;
-  document.querySelectorAll(".cut").forEach((part) => { part.hidden = whole; });
-  $("go").textContent = whole ? "Download video" : "Download clip";
+  document.querySelectorAll(".cut").forEach((el) => { el.hidden = $("whole").checked; });
+  nameButton();
   status("");
 });
 
-function problemWithTimes() {
-  const start = $("start").value.trim(), end = $("end").value.trim();
-  if (!$("url").value.trim()) return "Paste a YouTube link first.";
-  if ($("whole").checked) return "";
-  if (!TIME.test(start) || !TIME.test(end)) return "Enter the start and end as 90, 1:30 or 1:02:03.";
-  if (seconds(end) <= seconds(start)) return "The end has to be after the start.";
-  if (video && video.duration && seconds(end) > video.duration + 0.5) return "The end is past the end of the video (" + clock(video.duration) + ").";
-  return "";
-}
-
-async function waitFor(job) {
+/* Download */
+async function waitFor(job, tag) {
   for (;;) {
     await new Promise((r) => setTimeout(r, 700));
     const now = await (await fetch("/api/job/" + job)).json();
     if (now.state === "error") throw new Error(now.error);
     if (now.state === "done") return now;
-    status(now.step + (now.percent ? " " + now.percent + "%" : ""));
+    status(tag + now.step + (now.percent ? " " + now.percent + "%" : ""));
     $("fill").style.width = now.percent + "%";
   }
 }
 
+async function save(job, name) {
+  const file = "/api/file/" + job;
+  if (!folder) {
+    // Phones and browsers that cannot write to a folder: hand it to the normal download.
+    Object.assign(document.createElement("a"), { href: file, download: name }).click();
+    return;
+  }
+  const reply = await fetch(file);
+  if (!reply.ok) throw new Error("The finished file could not be read back.");
+  const target = await folder.getFileHandle(name, { create: true });
+  await reply.body.pipeTo(await target.createWritable());
+}
+
 $("form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const problem = problemWithTimes();
-  if (problem) return status(problem, true);
-
-  const start = $("start").value.trim(), end = $("end").value.trim();
+  if (!link()) return status("Paste a YouTube link first.", true);
   const whole = $("whole").checked;
-  const suggested = (video ? video.name : "clip") + (whole ? "" : " [" + stamp(seconds(start)) + "-" + stamp(seconds(end)) + "]") + ".mp4";
-
-  // Chrome and Edge on a computer can ask where to save. It must be asked right on the click.
-  let target = null;
-  if (window.showSaveFilePicker) {
+  const jobs = whole ? [{ whole }] : rows().map((row) => ({ start: part(row, "start").value.trim(), end: part(row, "end").value.trim() }));
+  if (!whole) {
+    for (const [i, row] of rows().entries()) {
+      const problem = problemWith(row);
+      if (problem) return status((jobs.length > 1 ? `Clip ${i + 1}: ` : "") + problem, true);
+    }
+  }
+  // Folder access has to be asked for right on the click.
+  if (canPickFolder) {
+    if (!folder && !(await chooseFolder())) return;
     try {
-      target = await showSaveFilePicker({ suggestedName: suggested, types: [{ description: "MP4 video", accept: { "video/mp4": [".mp4"] } }] });
-    } catch (err) {
-      if (err.name === "AbortError") return;  // closed the dialog
+      if (await folder.requestPermission({ mode: "readwrite" }) !== "granted") return status("Allow access to the folder so the file can be saved there.", true);
+    } catch {
+      folder = null;
+      showFolder();
+      return status("That folder is gone. Choose another one.", true);
     }
   }
 
   $("go").disabled = true;
   $("progress").hidden = false;
-  $("fill").style.width = "0%";
-  status("Starting...");
-  try {
-    const { job } = await post("/api/clip", { url: $("url").value.trim(), start, end, whole, res: Number($("res").value) });
-    const done = await waitFor(job);
-    $("fill").style.width = "100%";
-    const file = "/api/file/" + job;
-    if (target) {
-      status("Saving...");
-      const reply = await fetch(file);
-      if (!reply.ok) throw new Error("The finished clip could not be read back.");
-      await reply.body.pipeTo(await target.createWritable());
-      status("Saved as " + target.name);
-    } else {
-      const link = Object.assign(document.createElement("a"), { href: file, download: done.name });
-      link.click();
-      $("status").textContent = "Ready. Your browser is saving it. ";
-      $("status").classList.remove("bad");
-      $("status").append(Object.assign(document.createElement("a"), { href: file, download: done.name, textContent: "Save again" }));
+  const failed = [];
+  let lastName = "";
+  for (const [i, job] of jobs.entries()) {
+    const tag = jobs.length > 1 ? `Clip ${i + 1} of ${jobs.length}: ` : "";
+    $("fill").style.width = "0%";
+    status(tag + "Starting...");
+    try {
+      const started = await (await post("/api/clip", { url: link(), res: Number($("res").value), mode: $("mode").value, ...job })).json();
+      const done = await waitFor(started.job, tag);
+      await save(started.job, done.name);
+      lastName = done.name;
+    } catch (err) {
+      failed.push((jobs.length > 1 ? `Clip ${i + 1}: ` : "") + err.message);
     }
-  } catch (err) {
-    status("That did not work. " + err.message, true);
-    $("progress").hidden = true;
-    // The save dialog already created an empty file where the clip was meant to go.
-    if (target && target.remove) await target.remove().catch(() => {});
-  } finally {
-    $("go").disabled = false;
   }
+  $("go").disabled = false;
+  const saved = jobs.length - failed.length;
+  $("fill").style.width = saved ? "100%" : "0%";
+  $("progress").hidden = !saved;
+  const where = folder ? " to " + folder.name : ". Your browser is saving it";
+  const what = saved === 1 ? lastName : saved + " files";
+  if (!failed.length) status("Saved " + what + where + ".");
+  else status((saved ? "Saved " + what + where + ". " : "") + "That did not work. " + failed.join(" "), true);
 });
+
+addRow();
 </script>
 </body>
 </html>
