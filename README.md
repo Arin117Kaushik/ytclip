@@ -149,22 +149,25 @@ ytclip runs on the phone itself, no computer needed, inside the free [Termux](ht
    curl -fsSL https://raw.githubusercontent.com/Arin117Kaushik/ytclip/main/termux-setup.sh | bash
    ```
 3. Tap **Allow** when Android asks to let Termux access your files.
+4. Install the **ytclip** app: download `ytclip.apk` from [Releases](https://github.com/Arin117Kaushik/ytclip/releases/latest) on the phone and open it.
+5. Open ytclip and tap **Allow** when it asks to run commands in Termux. That is how the app starts the downloader in the background.
 
-Then any of these opens ytclip in your phone's browser:
+Then use it like any app:
 
 | Way | How |
 |---|---|
-| Share | In the YouTube app, tap **Share**, then **Termux**. The page opens with the link filled in |
-| Home screen button | Install [Termux:Widget](https://github.com/termux/termux-widget/releases), long-press the home screen, add the Termux widget and pick **ytclip** |
-| Type it | Open Termux and type `ytclip` |
+| App icon | Open **ytclip** from your home screen or app drawer |
+| Share | In the YouTube app, tap **Share**, then **ytclip**. It opens with the link filled in |
 
-Files save straight into the phone's **Downloads** folder. Leave Termux running in the background while a clip downloads.
+Termux has to stay installed, but you never need to open it. The app starts it in the background.
+
+Files save straight into the phone's **Downloads** folder. Keep the app open while a clip downloads.
 
 A phone encodes slower than a computer: a 30 second 1080p clip took about a minute in testing, and mp3s take seconds. Choose 720p when you are in a hurry.
 
-Run the install line again any time to update. ytclip also updates yt-dlp by itself once a day.
+To build the app yourself: `python android/build.py` (needs the Android SDK and a JDK, no Gradle).
 
-If the home screen button does nothing, allow Termux to **Display over other apps** in Android's app settings.
+Run the install line again any time to update. ytclip also updates yt-dlp by itself once a day.
 
 ## How it works
 

@@ -33,6 +33,12 @@ exec python ~/ytclip/app.py "$@"
 EOF
 chmod +x "$PREFIX/bin/ytclip"
 
+# The ytclip Android app starts the server through Termux's RUN_COMMAND. Termux only allows
+# that for apps the user has granted the "Run commands in Termux" permission to.
+mkdir -p ~/.termux
+grep -qs "^allow-external-apps *= *true" ~/.termux/termux.properties || echo "allow-external-apps = true" >> ~/.termux/termux.properties
+termux-reload-settings 2>/dev/null || true
+
 # Share a YouTube link to Termux and the page opens with it filled in.
 mkdir -p ~/bin ~/.shortcuts
 printf '#!/data/data/com.termux/files/usr/bin/bash\nexec ytclip "$1"\n' > ~/bin/termux-url-opener
