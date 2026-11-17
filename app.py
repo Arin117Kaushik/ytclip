@@ -31,6 +31,7 @@ JOBS = {}
 INFO = {}  # (url, res) -> (time fetched, yt-dlp info)
 # ponytail: finished clips stay in WORK until the server stops. Add a sweep if it runs for days.
 WORK = Path(tempfile.mkdtemp(prefix="ytclip-"))
+ANDROID = "ANDROID_ROOT" in os.environ  # running in Termux on a phone
 SETTINGS = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".config") / "ytclip" / "settings.json"
 # Runs in its own process: a folder dialog needs a main thread, and the server's is busy.
 DIALOG = """
@@ -48,7 +49,8 @@ def save_folder():
     try:
         return Path(json.loads(SETTINGS.read_text(encoding="utf-8"))["folder"])
     except (OSError, ValueError, KeyError, TypeError):
-        return Path.home() / "Downloads"
+        phone = Path("/storage/emulated/0/Download")  # the phone's Downloads, seen by the Files app
+        return phone if ANDROID and phone.is_dir() else Path.home() / "Downloads"
 
 
 def pick_folder():
@@ -156,7 +158,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not local:
                     return self.send_json({"folder": None})
                 folder = pick_folder() if ask.get("pick") else save_folder()
-                return self.send_json({"folder": str(folder), "name": folder.name or str(folder)})
+                # There is no folder dialog on a phone, so it always saves to Downloads.
+                return self.send_json({"folder": str(folder), "pickable": not ANDROID})
             url, res = str(ask["url"]).strip(), int(ask.get("res", 1080))
             if self.path == "/api/info":
                 info = get_info(url, res)
@@ -198,6 +201,9 @@ def open_window(url):
 
     Returns the browser process, or None when it fell back to a normal browser tab.
     """
+    if ANDROID:
+        subprocess.Popen(["termux-open-url", url])  # the phone's default browser
+        return None
     roots = [os.environ.get(v) for v in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
     names = ("Google/Chrome/Application/chrome.exe", "Microsoft/Edge/Application/msedge.exe",
              "BraveSoftware/Brave-Browser/Application/brave.exe")
@@ -217,22 +223,24 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--lan", action="store_true", help="allow phones and other devices on your Wi-Fi")
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("link", nargs="?", help="a YouTube link to open the page with, e.g. from Share")
     a = ap.parse_args()
     Handler.lan = a.lan
     here = f"http://127.0.0.1:{a.port}"
+    page = here + ("/?url=" + quote(a.link, safe="") if a.link else "")
     try:
         server = Server(("0.0.0.0" if a.lan else "127.0.0.1", a.port), Handler)
     except OSError:
         # Already running, so just bring up its window.
         shutil.rmtree(WORK, ignore_errors=True)
         if not a.no_browser:
-            open_window(here)
+            open_window(page)
         return
     print(f"ytclip is running at {here}")
     if a.lan:
         print(f"On your phone (same Wi-Fi): http://{lan_address()}:{a.port}")
     print("Press Ctrl+C to stop.")
-    window = None if a.no_browser else open_window(here)
+    window = None if a.no_browser else open_window(page)
     try:
         if window and not a.lan:
             # Desktop app behaviour: closing the window quits ytclip.

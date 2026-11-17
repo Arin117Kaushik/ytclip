@@ -96,6 +96,13 @@ def resolve(url, res, net):
     return json.loads(done.stdout)
 
 
+def update_ytdlp():
+    """Update yt-dlp the way it was installed: its own updater, or pip on a phone or pip install."""
+    if "pip" in (run(["yt-dlp", "-U"]).stdout or ""):
+        run([sys.executable, "-m", "pip", "install", "-U", "-q", "yt-dlp", "yt-dlp-ejs"])
+    return True
+
+
 def lookup(url, res):
     """resolve() over IPv4, then over the default route."""
     try:
@@ -304,7 +311,7 @@ def make_clip(url, start, end, res, dest, say=print, tick=show_percent, info=Non
     return try_routes([
         ("Downloading just the clip", lambda: section(*job, IPV4, tick, mode, info)),
         ("Trying the other network route", lambda: section(*job, AUTO, tick, mode)),
-        ("Updating yt-dlp and trying again", lambda: run(["yt-dlp", "-U"]) and section(*job, IPV4, tick, mode)),
+        ("Updating yt-dlp and trying again", lambda: update_ytdlp() and section(*job, IPV4, tick, mode)),
         ("Downloading the full video and cutting it locally", lambda: whole_then_cut(*job, IPV4, tick, mode)),
     ], say)
 
@@ -346,7 +353,7 @@ def whole_video(url, res, dest, say=print, tick=show_percent, info=None, mode="v
     return try_routes([
         ("Downloading the whole video", lambda: fetch(IPV4)),
         ("Trying the other network route", lambda: fetch(AUTO)),
-        ("Updating yt-dlp and trying again", lambda: run(["yt-dlp", "-U"]) and fetch(IPV4)),
+        ("Updating yt-dlp and trying again", lambda: update_ytdlp() and fetch(IPV4)),
     ], say)
 
 

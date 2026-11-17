@@ -227,8 +227,10 @@ for (const id of ["res", "mode"]) {
 /* On this computer the app writes the file itself, since browsers may not write to Downloads.
    A phone on the Wi-Fi has no folder here, so it gets a normal browser download. */
 async function loadFolder(pick = false) {
-  folder = (await (await post("/api/folder", { pick })).json()).folder;
+  const found = await (await post("/api/folder", { pick })).json();
+  folder = found.folder;
   $("folder").hidden = !folder;
+  $("pick").hidden = !found.pickable;
   $("folderName").textContent = folder || "";
 }
 loadFolder().catch(() => {});
@@ -397,6 +399,12 @@ $("form").addEventListener("submit", async (event) => {
 });
 
 addRow();
+// A link handed over by Share or the launcher, as /?url=...
+const shared = new URLSearchParams(location.search).get("url");
+if (shared) {
+  $("url").value = (shared.match(/https?:\/\/\S+/) || [shared])[0];  // Share can add the title in front
+  lookUp();
+}
 </script>
 </body>
 </html>
