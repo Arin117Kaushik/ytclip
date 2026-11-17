@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -118,7 +119,9 @@ public class MainActivity extends Activity {
         run.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", new String[] {"--no-browser"});
         run.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true);
         try {
-            startService(run);
+            // Termux is usually asleep, and Android only lets a sleeping app's service start in the foreground.
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(run);
+            else startService(run);
         } catch (RuntimeException e) {
             show("Could not reach Termux", e.getMessage());
             return;
