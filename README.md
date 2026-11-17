@@ -139,6 +139,33 @@ python app.py --lan
 
 The page is one HTML file in `web/` with no build step and no dependencies. The server is Python standard library only and calls the same code as the terminal tool.
 
+## On an Android phone
+
+ytclip runs on the phone itself, no computer needed, inside the free [Termux](https://termux.dev) app.
+
+1. Install **Termux** from [F-Droid](https://f-droid.org/packages/com.termux/) or [GitHub](https://github.com/termux/termux-app/releases). The Play Store version is outdated.
+2. Open Termux, paste this and press Enter. It takes a few minutes the first time.
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/Arin117Kaushik/ytclip/main/termux-setup.sh | bash
+   ```
+3. Tap **Allow** when Android asks to let Termux access your files.
+
+Then any of these opens ytclip in your phone's browser:
+
+| Way | How |
+|---|---|
+| Share | In the YouTube app, tap **Share**, then **Termux**. The page opens with the link filled in |
+| Home screen button | Install [Termux:Widget](https://github.com/termux/termux-widget/releases), long-press the home screen, add the Termux widget and pick **ytclip** |
+| Type it | Open Termux and type `ytclip` |
+
+Files save straight into the phone's **Downloads** folder. Leave Termux running in the background while a clip downloads.
+
+A phone encodes slower than a computer: a 30 second 1080p clip took about a minute in testing, and mp3s take seconds. Choose 720p when you are in a hurry.
+
+Run the install line again any time to update. ytclip also updates yt-dlp by itself once a day.
+
+If the home screen button does nothing, allow Termux to **Display over other apps** in Android's app settings.
+
 ## How it works
 
 1. `yt-dlp` resolves the video's stream addresses. That is one small request and no video data.
