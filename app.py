@@ -22,6 +22,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote, urlsplit
+from urllib.request import urlopen
 
 import clip
 
@@ -103,6 +104,7 @@ class Server(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
+    server_version = "ytclip"  # lets a second launch tell ytclip apart from other servers
     lan = False
 
     def log_message(self, *args):
@@ -218,6 +220,14 @@ def open_window(url):
                              "--no-first-run", "--window-size=720,900"])
 
 
+def is_ytclip(here):
+    try:
+        with urlopen(here + "/", timeout=2) as r:
+            return r.headers.get("Server", "").startswith("ytclip")
+    except Exception:
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser(description="ytclip app")
     ap.add_argument("--port", type=int, default=8765)
@@ -226,19 +236,27 @@ def main():
     ap.add_argument("link", nargs="?", help="a YouTube link to open the page with, e.g. from Share")
     a = ap.parse_args()
     Handler.lan = a.lan
-    here = f"http://127.0.0.1:{a.port}"
-    page = here + ("/?url=" + quote(a.link, safe="") if a.link else "")
-    try:
-        server = Server(("0.0.0.0" if a.lan else "127.0.0.1", a.port), Handler)
-    except OSError:
-        # Already running, so just bring up its window.
-        shutil.rmtree(WORK, ignore_errors=True)
-        if not a.no_browser:
-            open_window(page)
-        return
+    link = "/?url=" + quote(a.link, safe="") if a.link else ""
+    server = None
+    for port in range(a.port, a.port + 20):
+        here = f"http://127.0.0.1:{port}"
+        try:
+            server = Server(("0.0.0.0" if a.lan else "127.0.0.1", port), Handler)
+            break
+        except OSError:
+            if is_ytclip(here):
+                # Already running, so just bring up its window.
+                shutil.rmtree(WORK, ignore_errors=True)
+                if not a.no_browser:
+                    open_window(here + link)
+                return
+            # Some other program has this port. Try the next one.
+    if server is None:
+        sys.exit(f"Ports {a.port} to {a.port + 19} are all taken.")
+    page = here + link
     print(f"ytclip is running at {here}")
     if a.lan:
-        print(f"On your phone (same Wi-Fi): http://{lan_address()}:{a.port}")
+        print(f"On your phone (same Wi-Fi): http://{lan_address()}:{port}")
     print("Press Ctrl+C to stop.")
     window = None if a.no_browser else open_window(page)
     try:
