@@ -27,7 +27,7 @@ cat > "$PREFIX/bin/ytclip" <<'EOF'
 stamp=~/.cache/ytclip-updated
 if [ -z "$(find "$stamp" -mmin -1440 2>/dev/null)" ]; then
   mkdir -p ~/.cache && touch "$stamp"
-  (pip install -U -q yt-dlp yt-dlp-ejs; git -C ~/ytclip pull -q --ff-only) >/dev/null 2>&1 &
+  (pip install -U -q yt-dlp yt-dlp-ejs; git -C ~/ytclip fetch -q && git -C ~/ytclip reset -q --hard origin/main) >/dev/null 2>&1 &
 fi
 exec python ~/ytclip/app.py "$@"
 EOF
